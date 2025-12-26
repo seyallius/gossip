@@ -1,0 +1,178 @@
+// Copyright (c) 2025 SeyedAli
+// Licensed under the MIT License. See LICENSE file in the project root for details.
+
+// Package main. main demonstrates e-commerce order processing with event-driven batch processing.
+package main
+
+import (
+	"context"
+	"fmt"
+	"log"
+	"time"
+
+	gossip "github.com/seyallius/gossip/event"
+	"github.com/seyallius/gossip/event/batch"
+	"github.com/seyallius/gossip/event/bus"
+	"github.com/seyallius/gossip/event/filter"
+	"github.com/seyallius/gossip/event/middleware"
+)
+
+// E-commerce event types.
+const (
+	OrderCreated   gossip.EventType = "order.created"
+	OrderPaid      gossip.EventType = "order.paid"
+	OrderShipped   gossip.EventType = "order.shipped"
+	OrderDelivered gossip.EventType = "order.delivered"
+	OrderCancelled gossip.EventType = "order.cancelled"
+)
+
+// -------------------------------------------- Event Data Structs --------------------------------------------
+
+// OrderData contains order information.
+type OrderData struct {
+	OrderID    string
+	CustomerID string
+	Amount     float64
+	Items      []string
+}
+
+// -------------------------------------------- Processors --------------------------------------------
+
+// inventoryProcessor updates inventory when orders are created.
+func inventoryProcessor(ctx context.Context, event *gossip.Event) error {
+	data := event.Data.(*OrderData)
+	log.Printf("[Inventory] Reserving items for order %s: %v", data.OrderID, data.Items)
+	return nil
+}
+
+// paymentProcessor processes payments.
+func paymentProcessor(ctx context.Context, event *gossip.Event) error {
+	data := event.Data.(*OrderData)
+	log.Printf("[Payment] Processing payment of $%.2f for order %s", data.Amount, data.OrderID)
+	return nil
+}
+
+// shippingProcessor handles shipping logistics.
+func shippingProcessor(ctx context.Context, event *gossip.Event) error {
+	data := event.Data.(*OrderData)
+	log.Printf("[Shipping] Creating shipping label for order %s", data.OrderID)
+	return nil
+}
+
+// batchEmailProcessor processes multiple orders in a batch for efficiency.
+func batchEmailProcessor(ctx context.Context, events []*gossip.Event) error {
+	log.Printf("[Email Batch] Processing %d order notifications", len(events))
+
+	for _, event := range events {
+		data := event.Data.(*OrderData)
+		log.Printf("[Email] Sending confirmation for order %s to customer %s", data.OrderID, data.CustomerID)
+	}
+
+	return nil
+}
+
+// analyticsProcessor tracks order metrics with filtering.
+func analyticsProcessor(ctx context.Context, event *gossip.Event) error {
+	data := event.Data.(*OrderData)
+	log.Printf("[Analytics] Recording order value: $%.2f", data.Amount)
+	return nil
+}
+
+// -------------------------------------------- Service Logic --------------------------------------------
+
+// OrderService handles order processing.
+type OrderService struct {
+	bus *bus.EventBus
+}
+
+// NewOrderService creates a new order service.
+func NewOrderService(bus *bus.EventBus) *OrderService {
+	return &OrderService{
+		bus: bus,
+	}
+}
+
+// CreateOrder creates a new order and publishes an event.
+func (s *OrderService) CreateOrder(customerID string, items []string, amount float64) error {
+	orderID := fmt.Sprintf("order_%d", time.Now().Unix())
+
+	log.Printf("[Service] Creating order %s for customer %s", orderID, customerID)
+
+	eventData := &OrderData{
+		OrderID:    orderID,
+		CustomerID: customerID,
+		Amount:     amount,
+		Items:      items,
+	}
+
+	event := gossip.NewEvent(OrderCreated, eventData).
+		WithMetadata("source", "web")
+
+	s.bus.Publish(event)
+
+	return nil
+}
+
+// -------------------------------------------- Main --------------------------------------------
+
+func main() {
+	// Initialize event bus
+	config := &bus.Config{
+		Workers:    15,
+		BufferSize: 2000,
+	}
+	eventBus := bus.NewEventBus(config)
+	defer eventBus.Shutdown()
+
+	// Create batch processor for email notifications
+	batchConfig := batch.BatchConfig{
+		BatchSize:   10,
+		FlushPeriod: 5 * time.Second,
+	}
+	batchProcessor := batch.NewBatchProcessor(OrderCreated, batchConfig, batchEmailProcessor)
+	defer batchProcessor.Shutdown()
+
+	// Register handlers with various patterns
+
+	// Standard handlers
+	eventBus.Subscribe(OrderCreated, middleware.Chain(
+		middleware.WithRetry(3, 100*time.Millisecond),
+		middleware.WithTimeout(5*time.Second),
+	)(inventoryProcessor))
+
+	eventBus.Subscribe(OrderPaid, paymentProcessor)
+	eventBus.Subscribe(OrderShipped, shippingProcessor)
+
+	// Batch handler for emails
+	eventBus.Subscribe(OrderCreated, batchProcessor.AsEventProcessor())
+
+	// Filtered handler - only track high-value orders
+	highValueFilter := func(event *gossip.Event) bool {
+		data := event.Data.(*OrderData)
+		return data.Amount > 100.0
+	}
+	eventBus.Subscribe(OrderCreated, filter.NewFilteredProcessor(highValueFilter, analyticsProcessor))
+
+	// Create service
+	orderService := NewOrderService(eventBus)
+
+	// Simulate order activities
+	log.Println("=== Starting E-commerce Demo ===")
+
+	orderService.CreateOrder("customer_1", []string{"laptop", "mouse"}, 1299.99)
+	time.Sleep(100 * time.Millisecond)
+
+	orderService.CreateOrder("customer_2", []string{"keyboard"}, 79.99)
+	time.Sleep(100 * time.Millisecond)
+
+	orderService.CreateOrder("customer_3", []string{"monitor"}, 449.99)
+	time.Sleep(100 * time.Millisecond)
+
+	// Simulate multiple orders to trigger batch processing
+	for i := 0; i < 5; i++ {
+		orderService.CreateOrder(fmt.Sprintf("customer_%d", i+4), []string{"item"}, 50.0)
+	}
+
+	log.Println("=== Demo Complete - Waiting for batch flush ===")
+	time.Sleep(6 * time.Second)
+}

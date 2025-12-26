@@ -108,7 +108,7 @@ func TestEventBus_SynchronousPublish(t *testing.T) {
 	}
 
 	if !executed {
-		t.Error("Handler was not executed synchronously")
+		t.Error("Processor was not executed synchronously")
 	}
 }
 

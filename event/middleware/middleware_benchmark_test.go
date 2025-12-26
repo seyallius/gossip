@@ -27,13 +27,13 @@ func BenchmarkWithRetry(b *testing.B) {
 		return nil
 	}
 
-	wrappedHandler := WithRetry(3, 10*time.Millisecond)(processor)
+	wrappedProcessor := WithRetry(3, 10*time.Millisecond)(processor)
 	evt := event.NewEvent("test", nil)
 	ctx := context.Background()
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_ = wrappedHandler(ctx, evt)
+		_ = wrappedProcessor(ctx, evt)
 	}
 }
 
@@ -47,13 +47,13 @@ func BenchmarkWithTimeout(b *testing.B) {
 		return nil
 	}
 
-	wrappedHandler := WithTimeout(100 * time.Millisecond)(processor)
+	wrappedProcessor := WithTimeout(100 * time.Millisecond)(processor)
 	evt := event.NewEvent("test", nil)
 	ctx := context.Background()
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_ = wrappedHandler(ctx, evt)
+		_ = wrappedProcessor(ctx, evt)
 	}
 }
 
@@ -67,7 +67,7 @@ func BenchmarkChain(b *testing.B) {
 		return nil
 	}
 
-	wrappedHandler := Chain(
+	wrappedProcessor := Chain(
 		WithRecovery(),
 		WithRetry(2, 10*time.Millisecond),
 		WithTimeout(100*time.Millisecond),
@@ -79,6 +79,6 @@ func BenchmarkChain(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_ = wrappedHandler(ctx, evt)
+		_ = wrappedProcessor(ctx, evt)
 	}
 }
