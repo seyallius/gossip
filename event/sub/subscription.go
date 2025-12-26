@@ -1,3 +1,6 @@
+// Copyright (c) 2025 SeyedAli
+// Licensed under the MIT License. See LICENSE file in the project root for details.
+
 // Package sub. subscription provides subscription functionality for the event system.
 // It defines the Subscription type and related interfaces for handling events.
 package sub
