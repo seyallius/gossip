@@ -36,12 +36,12 @@ func BenchmarkEventBus_Subscribe(b *testing.B) {
 	}
 }
 
-// BenchmarkEventBus_PublishAsync_NoHandlers
+// BenchmarkEventBus_PublishAsync_NoProcessors
 //
 //	7354746               143.4 ns/op             0 B/op          0 allocs/op
 //	8537467               147.3 ns/op             0 B/op          0 allocs/op
 //	7507177               149.6 ns/op             0 B/op          0 allocs/op
-func BenchmarkEventBus_PublishAsync_NoHandlers(b *testing.B) {
+func BenchmarkEventBus_PublishAsync_NoProcessors(b *testing.B) {
 	bus := NewEventBus(&Config{Workers: 4, BufferSize: 10000})
 	defer bus.Shutdown()
 

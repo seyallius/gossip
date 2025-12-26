@@ -28,9 +28,9 @@ func TestWithRetry_SucceedsOnFirstAttempt(t *testing.T) {
 		return nil
 	}
 
-	wrappedHandler := WithRetry(3, 10*time.Millisecond)(processor)
+	wrappedProcessor := WithRetry(3, 10*time.Millisecond)(processor)
 
-	err := wrappedHandler(context.Background(), event.NewEvent("test", nil))
+	err := wrappedProcessor(context.Background(), event.NewEvent("test", nil))
 
 	assert.NoError(t, err)
 	assert.Equal(t, int32(1), atomic.LoadInt32(&attempts), "Should succeed on first attempt")
@@ -47,9 +47,9 @@ func TestWithRetry_RetriesUntilSuccess(t *testing.T) {
 		return nil
 	}
 
-	wrappedHandler := WithRetry(3, 10*time.Millisecond)(processor)
+	wrappedProcessor := WithRetry(3, 10*time.Millisecond)(processor)
 
-	err := wrappedHandler(context.Background(), event.NewEvent("test", nil))
+	err := wrappedProcessor(context.Background(), event.NewEvent("test", nil))
 
 	assert.NoError(t, err)
 	assert.Equal(t, int32(3), atomic.LoadInt32(&attempts), "Should retry until success")
@@ -64,9 +64,9 @@ func TestWithRetry_ExhaustsRetries(t *testing.T) {
 		return expectedErr
 	}
 
-	wrappedHandler := WithRetry(3, 10*time.Millisecond)(processor)
+	wrappedProcessor := WithRetry(3, 10*time.Millisecond)(processor)
 
-	err := wrappedHandler(context.Background(), event.NewEvent("test", nil))
+	err := wrappedProcessor(context.Background(), event.NewEvent("test", nil))
 
 	assert.Error(t, err)
 	assert.Equal(t, expectedErr, err)
@@ -81,9 +81,9 @@ func TestWithRetry_ExponentialBackoff(t *testing.T) {
 		return errors.New("error")
 	}
 
-	wrappedHandler := WithRetry(2, 50*time.Millisecond)(processor)
+	wrappedProcessor := WithRetry(2, 50*time.Millisecond)(processor)
 
-	_ = wrappedHandler(context.Background(), event.NewEvent("test", nil))
+	_ = wrappedProcessor(context.Background(), event.NewEvent("test", nil))
 
 	require.Len(t, attempts, 3, "Should have 3 attempts total")
 
@@ -103,12 +103,12 @@ func TestWithRetry_RespectsContext(t *testing.T) {
 		return errors.New("error")
 	}
 
-	wrappedHandler := WithRetry(10, 100*time.Millisecond)(processor)
+	wrappedProcessor := WithRetry(10, 100*time.Millisecond)(processor)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
 	defer cancel()
 
-	err := wrappedHandler(ctx, event.NewEvent("test", nil))
+	err := wrappedProcessor(ctx, event.NewEvent("test", nil))
 
 	assert.Error(t, err)
 	assert.Less(t, atomic.LoadInt32(&attempts), int32(11), "Should stop retrying when context is cancelled")
@@ -125,9 +125,9 @@ func TestWithTimeout_CompletesBeforeTimeout(t *testing.T) {
 		return nil
 	}
 
-	wrappedHandler := WithTimeout(100 * time.Millisecond)(processor)
+	wrappedProcessor := WithTimeout(100 * time.Millisecond)(processor)
 
-	err := wrappedHandler(context.Background(), event.NewEvent("test", nil))
+	err := wrappedProcessor(context.Background(), event.NewEvent("test", nil))
 
 	assert.NoError(t, err)
 	assert.True(t, executed)
@@ -139,24 +139,24 @@ func TestWithTimeout_ExceedsTimeout(t *testing.T) {
 		return nil
 	}
 
-	wrappedHandler := WithTimeout(50 * time.Millisecond)(processor)
+	wrappedProcessor := WithTimeout(50 * time.Millisecond)(processor)
 
-	err := wrappedHandler(context.Background(), event.NewEvent("test", nil))
+	err := wrappedProcessor(context.Background(), event.NewEvent("test", nil))
 
 	assert.Error(t, err)
 	assert.ErrorIs(t, err, context.DeadlineExceeded)
 }
 
-func TestWithTimeout_HandlerError(t *testing.T) {
+func TestWithTimeout_ProcessorError(t *testing.T) {
 	expectedErr := errors.New("processor error")
 
 	processor := func(ctx context.Context, e *event.Event) error {
 		return expectedErr
 	}
 
-	wrappedHandler := WithTimeout(100 * time.Millisecond)(processor)
+	wrappedProcessor := WithTimeout(100 * time.Millisecond)(processor)
 
-	err := wrappedHandler(context.Background(), event.NewEvent("test", nil))
+	err := wrappedProcessor(context.Background(), event.NewEvent("test", nil))
 
 	assert.Error(t, err)
 	assert.Equal(t, expectedErr, err)
@@ -164,7 +164,7 @@ func TestWithTimeout_HandlerError(t *testing.T) {
 
 // -------------------------------------------- Recovery Middleware Tests --------------------------------------------
 
-func TestWithRecovery_HandlerSucceeds(t *testing.T) {
+func TestWithRecovery_ProcessorSucceeds(t *testing.T) {
 	executed := false
 
 	processor := func(ctx context.Context, e *event.Event) error {
@@ -172,37 +172,37 @@ func TestWithRecovery_HandlerSucceeds(t *testing.T) {
 		return nil
 	}
 
-	wrappedHandler := WithRecovery()(processor)
+	wrappedProcessor := WithRecovery()(processor)
 
-	err := wrappedHandler(context.Background(), event.NewEvent("test", nil))
+	err := wrappedProcessor(context.Background(), event.NewEvent("test", nil))
 
 	assert.NoError(t, err)
 	assert.True(t, executed)
 }
 
-func TestWithRecovery_HandlerPanics(t *testing.T) {
+func TestWithRecovery_ProcessorPanics(t *testing.T) {
 	processor := func(ctx context.Context, e *event.Event) error {
 		panic("something went wrong")
 	}
 
-	wrappedHandler := WithRecovery()(processor)
+	wrappedProcessor := WithRecovery()(processor)
 
 	// Should not panic
-	err := wrappedHandler(context.Background(), event.NewEvent("test", nil))
+	err := wrappedProcessor(context.Background(), event.NewEvent("test", nil))
 
 	assert.NoError(t, err, "Recovery should return nil after catching panic")
 }
 
-func TestWithRecovery_HandlerPanicsWithError(t *testing.T) {
+func TestWithRecovery_ProcessorPanicsWithError(t *testing.T) {
 	panicErr := errors.New("panic error")
 
 	processor := func(ctx context.Context, e *event.Event) error {
 		panic(panicErr)
 	}
 
-	wrappedHandler := WithRecovery()(processor)
+	wrappedProcessor := WithRecovery()(processor)
 
-	err := wrappedHandler(context.Background(), event.NewEvent("test", nil))
+	err := wrappedProcessor(context.Background(), event.NewEvent("test", nil))
 
 	assert.NoError(t, err, "Recovery should catch panic and return nil")
 }
@@ -218,9 +218,9 @@ func TestWithLogging_Success(t *testing.T) {
 		return nil
 	}
 
-	wrappedHandler := WithLogging("", func(message string) { log.Println(message) })(processor)
+	wrappedProcessor := WithLogging("", func(message string) { log.Println(message) })(processor)
 
-	err := wrappedHandler(context.Background(), event.NewEvent("test", nil))
+	err := wrappedProcessor(context.Background(), event.NewEvent("test", nil))
 
 	assert.NoError(t, err)
 	assert.True(t, executed)
@@ -233,9 +233,9 @@ func TestWithLogging_Failure(t *testing.T) {
 		return expectedErr
 	}
 
-	wrappedHandler := WithLogging("", func(message string) { log.Println(message) })(processor)
+	wrappedProcessor := WithLogging("", func(message string) { log.Println(message) })(processor)
 
-	err := wrappedHandler(context.Background(), event.NewEvent("test", nil))
+	err := wrappedProcessor(context.Background(), event.NewEvent("test", nil))
 
 	assert.Error(t, err)
 	assert.Equal(t, expectedErr, err)
@@ -254,11 +254,11 @@ func TestChain_SingleMiddleware(t *testing.T) {
 		return nil
 	}
 
-	wrappedHandler := Chain(
+	wrappedProcessor := Chain(
 		WithRetry(2, 10*time.Millisecond),
 	)(processor)
 
-	err := wrappedHandler(context.Background(), event.NewEvent("test", nil))
+	err := wrappedProcessor(context.Background(), event.NewEvent("test", nil))
 
 	assert.NoError(t, err)
 	assert.Equal(t, int32(2), atomic.LoadInt32(&attempts))
@@ -276,7 +276,7 @@ func TestChain_MultipleMiddlewares(t *testing.T) {
 		return nil
 	}
 
-	wrappedHandler := Chain(
+	wrappedProcessor := Chain(
 		WithRecovery(),
 		WithRetry(2, 10*time.Millisecond),
 		WithTimeout(500*time.Millisecond),
@@ -285,7 +285,7 @@ func TestChain_MultipleMiddlewares(t *testing.T) {
 		}),
 	)(processor)
 
-	err := wrappedHandler(context.Background(), event.NewEvent("test", nil))
+	err := wrappedProcessor(context.Background(), event.NewEvent("test", nil))
 
 	assert.NoError(t, err)
 	assert.GreaterOrEqual(t, atomic.LoadInt32(&attempts), int32(2))
@@ -298,14 +298,14 @@ func TestChain_OrderMatters(t *testing.T) {
 	}
 
 	// Recovery first - should catch panic
-	wrappedHandler1 := Chain(
+	wrappedProcessor1 := Chain(
 		WithRecovery(),
 		WithLogging("", func(message string) {
 			log.Println(message)
 		}),
 	)(processor)
 
-	err1 := wrappedHandler1(context.Background(), event.NewEvent("test", nil))
+	err1 := wrappedProcessor1(context.Background(), event.NewEvent("test", nil))
 	assert.NoError(t, err1, "Recovery should catch panic")
 
 	// If logging was first, panic would escape (but WithRecovery still catches it here)
@@ -320,9 +320,9 @@ func TestChain_EmptyChain(t *testing.T) {
 		return nil
 	}
 
-	wrappedHandler := Chain()(processor)
+	wrappedProcessor := Chain()(processor)
 
-	err := wrappedHandler(context.Background(), event.NewEvent("test", nil))
+	err := wrappedProcessor(context.Background(), event.NewEvent("test", nil))
 
 	assert.NoError(t, err)
 	assert.True(t, executed)
@@ -344,12 +344,12 @@ func TestMiddleware_WithEventBus(t *testing.T) {
 		return nil
 	}
 
-	wrappedHandler := Chain(
+	wrappedProcessor := Chain(
 		WithRetry(3, 10*time.Millisecond),
 		WithTimeout(500*time.Millisecond),
 	)(processor)
 
-	eventBus.Subscribe("test.event", wrappedHandler)
+	eventBus.Subscribe("test.event", wrappedProcessor)
 
 	eventBus.Publish(event.NewEvent("test.event", nil))
 	time.Sleep(200 * time.Millisecond)
@@ -357,7 +357,7 @@ func TestMiddleware_WithEventBus(t *testing.T) {
 	assert.Equal(t, int32(3), atomic.LoadInt32(&attempts))
 }
 
-func TestMiddleware_MultipleHandlersWithDifferentMiddleware(t *testing.T) {
+func TestMiddleware_MultipleProcessorsWithDifferentMiddleware(t *testing.T) {
 	eventBus := bus.NewEventBus(bus.DefaultConfig())
 	defer eventBus.Shutdown()
 
@@ -365,7 +365,7 @@ func TestMiddleware_MultipleHandlersWithDifferentMiddleware(t *testing.T) {
 	processor1Called := false
 	processor2Called := false
 
-	// Handler 1 with retry
+	// Processor 1 with retry
 	processor1 := WithRetry(2, 10*time.Millisecond)(func(ctx context.Context, e *event.Event) error {
 		mu.Lock()
 		defer mu.Unlock()
@@ -373,7 +373,7 @@ func TestMiddleware_MultipleHandlersWithDifferentMiddleware(t *testing.T) {
 		return nil
 	})
 
-	// Handler 2 with timeout
+	// Processor 2 with timeout
 	processor2 := WithTimeout(100 * time.Millisecond)(func(ctx context.Context, e *event.Event) error {
 		mu.Lock()
 		defer mu.Unlock()

@@ -103,7 +103,7 @@ func WithLogging(msg string, logFunc func(message string)) Middleware {
 				msg = fmt.Sprintf("%s [Middleware] Processor for %s failed after %v: %v", msg, eventToPub.Type, duration, err)
 				logFunc(msg)
 			} else {
-				msg = fmt.Sprintf("%s [Middleware] Handler for %s completed in %v", msg, eventToPub.Type, duration)
+				msg = fmt.Sprintf("%s [Middleware] Processor for %s completed in %v", msg, eventToPub.Type, duration)
 				logFunc(msg)
 			}
 
