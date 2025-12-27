@@ -67,6 +67,108 @@ func main() {
 }
 ```
 
+## ⚠️ Error Handling
+
+Gossip provides standard error types for conditional logic and error handling, including both constructor functions and pre-defined constants similar to `io.EOF` or `redis.Nil`:
+
+```go
+import "github.com/seyallius/gossip/event/errors"
+
+// In your event processor - using constructor functions for custom messages
+func myProcessor(ctx context.Context, event *event.Event) error {
+    // Validate input data
+    if event.Data == nil {
+        return errors.NewValidationError("data", nil, "event data cannot be nil")
+    }
+
+    // Process the event
+    if err := processEvent(event); err != nil {
+        // Return specific error types for middleware to handle appropriately
+        if isTransientError(err) {
+            return errors.NewRetryableError(err, "temporary processing failure")
+        }
+        return errors.NewProcessingError(err, "permanent processing failure")
+    }
+
+    return nil
+}
+
+// In your event processor - using pre-defined constants for common scenarios
+func mySimpleProcessor(ctx context.Context, event *event.Event) error {
+    // Type assertion with error handling
+    data, ok := event.Data.(*UserData)
+    if !ok {
+        // Use the pre-defined constant for type assertion failures
+        return errors.ErrTypeAssertionFailed
+    }
+
+    // Check for nil data
+    if data == nil {
+        // Use the pre-defined constant for nil data
+        return errors.ErrNilData
+    }
+
+    // Process the event
+    if data.Email == "" {
+        // Use the pre-defined constant for validation failures
+        return errors.ErrValidationFailed
+    }
+
+    return nil
+}
+
+// Check error types in your application code
+func handleEventError(err error) {
+    if errors.IsRetryable(err) {
+        log.Println("Will retry the operation")
+    } else if errors.IsFatal(err) {
+        log.Println("Will not retry - fatal error")
+    } else if errors.IsValidation(err) {
+        log.Println("Validation failed - check input data")
+    } else if errors.IsTypeAssertion(err) {
+        log.Println("Type assertion failed - check event data type")
+    } else if errors.IsNoData(err) {
+        log.Println("No data found - event data is nil")
+    }
+}
+
+// You can also check for specific constants directly
+func handleSpecificError(err error) {
+    switch {
+    case errors.Is(err, errors.ErrNilData):
+        log.Println("Event data is nil")
+    case errors.Is(err, errors.ErrTypeAssertionFailed):
+        log.Println("Type assertion failed")
+    case errors.Is(err, errors.ErrValidationFailed):
+        log.Println("Validation failed")
+    }
+}
+```
+
+### Standard Error Types
+
+- `RetryableError` - Transient failures that can be retried
+- `ValidationError` - Input validation failures
+- `ProcessingError` - General processing failures
+- `TimeoutError` - Operations that exceeded time limits
+- `FatalError` - Unrecoverable errors that should not be retried
+- `TypeAssertionError` - Type assertion failures (similar to redis.Nil for type mismatches)
+- `NoDataError` - Missing event data when data was expected
+- `InvalidEventError` - Malformed or invalid events
+- `UnsupportedEventTypeError` - Event types not supported by a processor
+
+### Pre-defined Error Constants
+
+- `errors.ErrNilData` - Pre-defined nil data error (similar to redis.Nil)
+- `errors.ErrTypeAssertionFailed` - Pre-defined type assertion failure
+- `errors.ErrInvalidEvent` - Pre-defined invalid event error
+- `errors.ErrUnsupportedEventType` - Pre-defined unsupported event type error
+- `errors.ErrRetryable` - Pre-defined retryable error
+- `errors.ErrValidationFailed` - Pre-defined validation error
+- `errors.ErrProcessingFailed` - Pre-defined processing error
+- `errors.ErrTimeout` - Pre-defined timeout error
+- `errors.ErrFatal` - Pre-defined fatal error
+
 ## 🧩 Components Quick Start
 
 ### 1. Event Bus (Core)

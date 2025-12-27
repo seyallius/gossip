@@ -79,7 +79,7 @@ event.WithMetadata("source", "api")
 Processors are functions that process events:
 
 ```go
-func myProcessor(ctx context.Context, event *gossip.Event) error {
+func myProcessor(ctx context.Context, event *event.Event) error {
     // Type assert the data
     data := event.Data.(*UserData)
     
@@ -166,31 +166,32 @@ In your main application:
 package main
 
 import (
-    "log"
-    gossip "github.com/seyallius/gossip/event"
+	"log"
+
+	"github.com/seyallius/gossip/event/bus"
 )
 
-var eventBus *gossip.EventBus
+var eventBus *bus.EventBus
 
 func initEventBus() {
-    config := &gossip.Config{
-        Workers:    10,    // Adjust based on load
-        BufferSize: 1000,  // Adjust based on event volume
-    }
-    
-    eventBus = gossip.NewEventBus(config)
-    log.Println("Event bus initialized")
+	config := &bus.Config{
+		Workers:    10,   // Adjust based on load
+		BufferSize: 1000, // Adjust based on event volume
+	}
+
+	eventBus = bus.NewEventBus(config)
+	log.Println("Event bus initialized")
 }
 
 func main() {
-    initEventBus()
-    defer eventBus.Shutdown()
-    
-    // Register handlers
-    registerProcessors()
-    
-    // Start your application
-    // ...
+	initEventBus()
+	defer eventBus.Shutdown()
+
+	// Register handlers
+	registerProcessors()
+
+	// Start your application
+	// ...
 }
 ```
 
@@ -203,23 +204,25 @@ Create handler registration function:
 package handlers
 
 import (
-    "github.com/seyallius/gossip"
-    "yourapp/events"
+	"github.com/seyallius/gossip"
+	"github.com/seyallius/gossip/event/bus"
+
+	"yourapp/events"
 )
 
-func RegisterProcessors(bus *gossip.EventBus) {
-    // User handlers
-    bus.Subscribe(events.UserCreated, EmailNotificationProcessor)
-    bus.Subscribe(events.UserCreated, AuditLogProcessor)
-    bus.Subscribe(events.UserCreated, MetricsProcessor)
-    
-    // Auth handlers
-    bus.Subscribe(events.LoginSuccess, SecurityProcessor)
-    bus.Subscribe(events.LoginSuccess, AnalyticsProcessor)
-    
-    // Order handlers
-    bus.Subscribe(events.OrderCreated, InventoryProcessor)
-    bus.Subscribe(events.OrderPaid, PaymentProcessorProcessor)
+func RegisterProcessors(eventBus *bus.EventBus) {
+	// User handlers
+	eventBus.Subscribe(events.UserCreated, EmailNotificationProcessor)
+	eventBus.Subscribe(events.UserCreated, AuditLogProcessor)
+	eventBus.Subscribe(events.UserCreated, MetricsProcessor)
+
+	// Auth handlers
+	eventBus.Subscribe(events.LoginSuccess, SecurityProcessor)
+	eventBus.Subscribe(events.LoginSuccess, AnalyticsProcessor)
+
+	// Order handlers
+	eventBus.Subscribe(events.OrderCreated, InventoryProcessor)
+	eventBus.Subscribe(events.OrderPaid, PaymentProcessorProcessor)
 }
 ```
 
@@ -230,34 +233,37 @@ func RegisterProcessors(bus *gossip.EventBus) {
 package services
 
 import (
-    "github.com/seyallius/gossip"
-    "yourapp/events"
+	"github.com/seyallius/gossip"
+	"github.com/seyallius/gossip/event"
+	"github.com/seyallius/gossip/event/bus"
+
+	"yourapp/events"
 )
 
 type UserService struct {
-    bus *gossip.EventBus
+	eventBus *bus.EventBus
 }
 
 func (s *UserService) CreateUser(email, username string) error {
-    // Core business logic
-    userID := generateUserID()
-    
-    // ... save to database ...
-    
-    // Publish event
-    eventData := &events.UserCreatedData{
-        UserID:   userID,
-        Email:    email,
-        Username: username,
-    }
-    
-    event := gossip.NewEvent(events.UserCreated, eventData).
-        WithMetadata("source", "api").
-        WithMetadata("request_id", getRequestID())
-    
-    s.bus.Publish(event)
-    
-    return nil
+	// Core business logic
+	userID := generateUserID()
+
+	// ... save to database ...
+
+	// Publish event
+	eventData := &events.UserCreatedData{
+		UserID:   userID,
+		Email:    email,
+		Username: username,
+	}
+
+	event := event.NewEvent(events.UserCreated, eventData).
+		WithMetadata("source", "api").
+		WithMetadata("request_id", getRequestID())
+
+	s.eventBus.Publish(event)
+
+	return nil
 }
 ```
 
@@ -269,7 +275,11 @@ func (s *UserService) CreateUser(email, username string) error {
 
 **File: `examples/auth_service/main.go`**
 
-Demonstrates:
+This example demonstrates a complete authentication service using Gossip for event-driven architecture.
+
+**Overview**
+
+The example shows:
 - User registration with welcome emails
 - Login tracking and notifications
 - Password change alerts
@@ -282,16 +292,28 @@ cd examples/auth_service
 go run main.go
 ```
 
-**Key Patterns:**
-- Multiple handlers for single event (fan-out)
-- Middleware composition (retry, timeout, recovery)
-- Metadata usage for request tracking
+**Key Concepts Demonstrated**
+
+1. **Event Fan-out**: Multiple handlers for single event
+2. **Middleware Composition**: Combining retry, timeout, and recovery middleware
+3. **Metadata Usage**: Using metadata for request tracking and context
+4. **Security Patterns**: Implementing security monitoring with events
+
+**Components Used**
+
+- Event bus for decoupling services
+- Middleware for error handling and recovery
+- Metadata for request correlation
 
 ### 2. E-commerce Platform
 
 **File: `examples/ecommerce/main.go`**
 
-Demonstrates:
+This example demonstrates an e-commerce platform using Gossip for event-driven order processing and notifications.
+
+**Overview**
+
+The example shows:
 - Order creation and processing
 - Batch email notifications
 - Inventory management
@@ -304,16 +326,28 @@ cd examples/ecommerce
 go run main.go
 ```
 
-**Key Patterns:**
-- Batch processing for efficiency
-- Event filtering based on conditions
-- Async inventory updates
+**Key Concepts Demonstrated**
+
+1. **Batch Processing**: Efficient processing of high-volume events
+2. **Event Filtering**: Conditional processing based on event properties
+3. **Async Operations**: Asynchronous inventory updates
+4. **Pipeline Processing**: Sequential event processing patterns
+
+**Components Used**
+
+- Batch processors for efficient email sending
+- Event filters for conditional processing
+- Multiple event handlers for different business operations
 
 ### 3. Microservices Communication
 
 **File: `examples/microservices/main.go`**
 
-Demonstrates:
+This example demonstrates microservices communication using Gossip for cross-service event-driven architecture.
+
+**Overview**
+
+The example shows:
 - Cross-service event communication
 - Service-to-service decoupling
 - Multiple services reacting to same event
@@ -325,10 +359,84 @@ cd examples/microservices
 go run main.go
 ```
 
-**Key Patterns:**
-- Self-registering handlers in service constructors
-- Shared event bus across services
-- Event-driven service orchestration
+**Key Concepts Demonstrated**
+
+1. **Service Decoupling**: Loose coupling between services using events
+2. **Event Chaining**: Services publishing events that trigger other services
+3. **Shared Event Bus**: Using a common event bus across multiple services
+4. **Self-Registering Handlers**: Services registering their own event handlers
+
+**Components Used**
+
+- Shared event bus for inter-service communication
+- Self-registering event handlers
+- Event-driven orchestration patterns
+
+### 4. Error Handling with Conditional Logic
+
+**File: `examples/error_handling/main.go`**
+
+This example demonstrates how to use Gossip's standard error types for conditional error handling in event-driven applications.
+
+**Overview**
+
+The example shows:
+- How to use different error types (`RetryableError`, `ValidationError`, `FatalError`, etc.)
+- How to implement conditional error handling based on error types
+- How to create custom middleware that handles errors differently based on their type
+- How to combine error handling with other middleware like retry and timeout
+
+**Run:**
+```bash
+cd examples/error_handling
+go run main.go
+```
+
+**Key Concepts Demonstrated**
+
+1. **Standard Error Types**: Using `gossip/event/errors` package to create typed errors
+2. **Conditional Error Handling**: Using `IsRetryable`, `IsValidation`, etc. to handle different error types differently
+3. **Integration with Middleware**: How error types work with existing middleware like retry and timeout
+4. **Custom Error Handling Middleware**: Creating middleware that responds to specific error types
+
+**Error Types Used**
+
+- `RetryableError`: For transient failures that should be retried
+- `ValidationError`: For input validation failures
+- `FatalError`: For unrecoverable errors that should not be retried
+- `TimeoutError`: For operations that exceed time limits
+- `ProcessingError`: For general processing failures
+
+### 5. Type Assertion Error Handling
+
+**File: `examples/type_assertion_example/main.go`**
+
+This example demonstrates proper handling of type assertion failures using Gossip's error handling patterns.
+
+**Overview**
+
+The example shows:
+- How to properly handle type assertion failures using `TypeAssertionError`
+- Similar to `redis.Nil` pattern for type mismatches
+- How to implement conditional error handling for type-related issues
+- Best practices for type-safe event data processing
+
+**Run:**
+```bash
+cd examples/type_assertion_example
+go run main.go
+```
+
+**Key Concepts Demonstrated**
+
+1. **Safe Type Assertions**: Using proper type assertion patterns with error handling
+2. **Type-Safe Processing**: Ensuring type-safe event data processing
+3. **Conditional Error Handling**: Handling type-related errors differently based on context
+4. **Error Type Integration**: How type assertion errors work with other error handling patterns
+
+**Error Types Used**
+
+- `TypeAssertionError`: For type assertion failures
 
 ---
 
@@ -339,11 +447,11 @@ go run main.go
 Chain multiple middleware for robust handling:
 
 ```go
-handler := gossip.Chain(
-    gossip.WithRecovery(),                      // Catch panics
-    gossip.WithRetry(3, 100*time.Millisecond),  // Retry on failure
-    gossip.WithTimeout(5*time.Second),          // Prevent hanging
-    gossip.WithLogging(),                       // Log execution
+handler := middleware.Chain(
+    middleware.WithRecovery(),                      // Catch panics
+    middleware.WithRetry(3, 100*time.Millisecond),  // Retry on failure
+    middleware.WithTimeout(5*time.Second),          // Prevent hanging
+    middleware.WithLogging(),                       // Log execution
 )(myProcessor)
 
 bus.Subscribe(UserCreated, handler)
@@ -358,15 +466,15 @@ Only execute handlers when conditions are met:
 ```go
 
 // Only process events from specific source
-apiFilter := gossip.FilterByMetadata("source", "api")
-bus.Subscribe(UserCreated, gossip.NewFilteredProcessor(apiFilter, apiProcessor))
+apiFilter := filter.FilterByMetadata("source", "api")
+bus.GetGlobalBus().Subscribe(UserCreated, gossip.NewFilteredProcessor(apiFilter, apiProcessor))
 
 // Combine filters with AND/OR logic
-complexFilter := gossip.And(
-    gossip.FilterByMetadataExists("user_id"),
-    gossip.Or(
-        gossip.FilterByMetadata("source", "api"),
-        gossip.FilterByMetadata("source", "web"),
+complexFilter := filter.And(
+    filter.FilterByMetadataExists("user_id"),
+    filter.Or(
+        filter.FilterByMetadata("source", "api"),
+        filter.FilterByMetadata("source", "web"),
     ),
 )
 ```
@@ -376,12 +484,12 @@ complexFilter := gossip.And(
 Efficient processing of high-volume events:
 
 ```go
-batchConfig := gossip.BatchConfig{
+batchConfig := batch.BatchConfig{
     BatchSize:   100,              // Process 100 events at once
     FlushPeriod: 5 * time.Second,  // Or every 5 seconds
 }
 
-batchProcessor := func(ctx context.Context, events []*gossip.Event) error {
+batchProcessor := func(ctx context.Context, events []*event.Event) error {
     // Process all events together
     log.Printf("Processing batch of %d events", len(events))
     
@@ -463,7 +571,7 @@ log.Println("All handlers succeeded")
 ### 3. Error Handling
 
 ```go
-func myProcessor(ctx context.Context, event *gossip.Event) error {
+func myProcessor(ctx context.Context, event *event.Event) error {
     // Type assertion with check
     data, ok := event.Data.(*UserData)
     if !ok {
@@ -502,19 +610,19 @@ func TestUserCreatedProcessor(t *testing.T) {
 
 ```go
 // Low volume (< 100 events/sec)
-config := &gossip.Config{
+config := &bus.Config{
     Workers:    5,
     BufferSize: 500,
 }
 
 // Medium volume (100-1000 events/sec)
-config := &gossip.Config{
+config := &bus.Config{
     Workers:    10,
     BufferSize: 1000,
 }
 
 // High volume (> 1000 events/sec)
-config := &gossip.Config{
+config := &bus.Config{
     Workers:    20,
     BufferSize: 5000,
 }
@@ -543,7 +651,7 @@ if !ok {
 
 ❌ **Wrong:**
 ```go
-func slowProcessor(ctx context.Context, event *gossip.Event) error {
+func slowProcessor(ctx context.Context, event *event.Event) error {
     time.Sleep(30 * time.Second) // Blocks worker
     return nil
 }
@@ -551,7 +659,7 @@ func slowProcessor(ctx context.Context, event *gossip.Event) error {
 
 ✅ **Correct:**
 ```go
-func fastProcessor(ctx context.Context, event *gossip.Event) error {
+func fastProcessor(ctx context.Context, event *event.Event) error {
     // Offload heavy work
     go processInBackground(event.Data)
     return nil
@@ -583,13 +691,13 @@ func main() {
 ❌ **Wrong:**
 ```go
 // Processor A publishes Event B
-func handlerA(ctx context.Context, event *gossip.Event) error {
+func handlerA(ctx context.Context, event *event.Event) error {
     bus.Publish(gossip.NewEvent(EventB, nil))
     return nil
 }
 
 // Processor B publishes Event A (circular!)
-func handlerB(ctx context.Context, event *gossip.Event) error {
+func handlerB(ctx context.Context, event *event.Event) error {
     bus.Publish(gossip.NewEvent(EventA, nil))
     return nil
 }
