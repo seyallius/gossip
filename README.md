@@ -89,15 +89,15 @@ For comprehensive documentation, examples, and advanced usage patterns, see:
 Define strongly-typed event identifiers:
 ```go
 const (
-    UserCreated gossip.EventType = "user.created"
-    UserUpdated gossip.EventType = "user.updated"
+    UserCreated event.EventType = "user.created"
+    UserUpdated event.EventType = "user.updated"
 )
 ```
 
 ### Events
 Events carry data and metadata:
 ```go
-event := gossip.NewEvent(UserCreated, userData).
+event := event.NewEvent(UserCreated, userData).
     WithMetadata("request_id", "req-123").
     WithMetadata("source", "api")
 ```
@@ -105,7 +105,7 @@ event := gossip.NewEvent(UserCreated, userData).
 ### Processors
 Functions that process events:
 ```go
-func myProcessor(ctx context.Context, event *gossip.Event) error {
+func myProcessor(ctx context.Context, event *event.Event) error {
     // Process event
     return nil
 }
@@ -149,7 +149,7 @@ bus.Subscribe(UserCreated, processor)
 ### Filtering
 Conditionally execute processors:
 ```go
-filter := func(event *gossip.Event) bool {
+filter := func(event *event.Event) bool {
     return event.Metadata["priority"] == "high"
 }
 
@@ -159,41 +159,41 @@ bus.Subscribe(OrderCreated, gossip.NewFilteredProcessor(filter, processor))
 ### Batch Processing
 Process events in groups:
 ```go
-batchConfig := gossip.BatchConfig{
+batchConfig := batch.BatchConfig{
     BatchSize:   100,
     FlushPeriod: 5 * time.Second,
 }
 
-processor := gossip.NewBatchProcessor(OrderCreated, batchConfig, batchProcessor)
+processor := batch.NewBatchProcessor(OrderCreated, batchConfig, batchProcessor)
 bus.Subscribe(OrderCreated, processor.AsEventProcessor())
 ```
 
 ## ⚙️ Configuration
 
 ```go
-config := &gossip.Config{
+config := &bus.Config{
     Workers:    20,     // Number of worker goroutines
     BufferSize: 2000,   // Event channel buffer size
 }
 
-bus := gossip.NewEventBus(config)
+bus := bus.NewEventBus(config)
 ```
 
 ## 🧪 Testing
 
 ```go
 func TestMyProcessor(t *testing.T) {
-    bus := gossip.NewEventBus(gossip.DefaultConfig())
-    defer bus.Shutdown()
+    eventBus := bus.NewEventBus(bus.DefaultConfig())
+    defer eventBus.Shutdown()
     
     received := false
-    processor := func(ctx context.Context, event *gossip.Event) error {
+    processor := func(ctx context.Context, event *event.Event) error {
         received = true
         return nil
     }
-    
-    bus.Subscribe(UserCreated, processor)
-    bus.Publish(gossip.NewEvent(UserCreated, nil))
+
+    eventBus.Subscribe(UserCreated, processor)
+    eventBus.Publish(event.NewEvent(UserCreated, nil))
     
     time.Sleep(100 * time.Millisecond)
     assert.True(t, received)
