@@ -188,10 +188,15 @@ func (s *AuthService) ChangePassword(userID, oldPassword, newPassword string) er
 // -------------------------------------------- Main --------------------------------------------
 
 func main() {
-	// Initialize event bus
+	// Initialize event bus with default in-memory provider
 	config := &bus.Config{
+		Driver:     "memory", // Use "redis" for distributed systems
 		Workers:    10,
 		BufferSize: 1000,
+		// For Redis provider, configure:
+		// RedisAddr:  "localhost:6379",
+		// RedisPwd:   "",
+		// RedisDB:    0,
 	}
 	eventBus := bus.NewEventBus(config)
 	defer eventBus.Shutdown()

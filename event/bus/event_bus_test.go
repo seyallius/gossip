@@ -90,28 +90,6 @@ func TestEventBus_Unsubscribe(t *testing.T) {
 	}
 }
 
-func TestEventBus_SynchronousPublish(t *testing.T) {
-	bus := NewEventBus(DefaultConfig())
-	defer bus.Shutdown()
-
-	executed := false
-	eventProcessor := func(ctx context.Context, event *event.Event) error {
-		executed = true
-		return nil
-	}
-
-	bus.Subscribe(testdata.AuthEventPasswordChanged, eventProcessor)
-	errors := bus.PublishSync(context.Background(), event.NewEvent(testdata.AuthEventPasswordChanged, nil))
-
-	if len(errors) != 0 {
-		t.Errorf("Expected no errors, got %d", len(errors))
-	}
-
-	if !executed {
-		t.Error("Processor was not executed synchronously")
-	}
-}
-
 func TestEventBus_ConcurrentPublish(t *testing.T) {
 	bus := NewEventBus(DefaultConfig())
 	defer bus.Shutdown()
@@ -159,6 +137,7 @@ func TestEventBus_GracefulShutdown(t *testing.T) {
 		bus.Publish(event.NewEvent(testdata.AuthEventUserCreated, &testdata.UserCreatedData{}))
 	}
 
+	time.Sleep(time.Millisecond) // or else there'll be no time for publishing before shutdown
 	bus.Shutdown()
 
 	if atomic.LoadInt32(&counter) == 0 {

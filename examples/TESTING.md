@@ -53,7 +53,12 @@ func TestEmailProcessorWithMock(t *testing.T) {
 
 ```go
 func TestUserCreationFlow(t *testing.T) {
-    bus := gossip.NewEventBus(gossip.DefaultConfig())
+    config := &gossip.Config{
+        Driver:     "memory",
+        Workers:    10,
+        BufferSize: 1000,
+    }
+    bus := gossip.NewEventBus(config)
     defer bus.Shutdown()
     
     // Track handler executions
@@ -91,7 +96,12 @@ func TestUserCreationFlow(t *testing.T) {
 
 ```go
 func TestEventOrdering(t *testing.T) {
-    bus := gossip.NewEventBus(gossip.DefaultConfig())
+    config := &gossip.Config{
+        Driver:     "memory",
+        Workers:    10,
+        BufferSize: 1000,
+    }
+    bus := gossip.NewEventBus(config)
     defer bus.Shutdown()
     
     var events []string

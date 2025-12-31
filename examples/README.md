@@ -82,13 +82,38 @@ Processors are functions that process events:
 func myProcessor(ctx context.Context, event *event.Event) error {
     // Type assert the data
     data := event.Data.(*UserData)
-    
+
     // Process the event
     log.Printf("Processing user: %s", data.UserID)
-    
+
     // Return error if processing fails
     return nil
 }
+```
+
+### 4. Provider Configuration
+
+Gossip now supports pluggable transport providers. You can configure the event bus to use different backends:
+
+```go
+// In-memory provider (default)
+config := &gossip.Config{
+    Driver:     "memory",
+    Workers:    10,
+    BufferSize: 1000,
+}
+
+// Redis provider (for distributed systems)
+config := &gossip.Config{
+    Driver:     "redis",
+    Workers:    10,
+    BufferSize: 1000,
+    RedisAddr:  "localhost:6379",
+    RedisPwd:   "",
+    RedisDB:    0,
+}
+
+eventBus := gossip.NewEventBus(config)
 ```
 
 **Key points:**

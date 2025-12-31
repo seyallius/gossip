@@ -3,20 +3,21 @@
 ## Table of Contents
 1. [Overview](#overview)
 2. [Core Architecture](#core-architecture)
-3. [Event Types and Data Structures](#event-types-and-data-structures)
-4. [Event Bus Implementation](#event-bus-implementation)
-5. [Concurrency Model](#concurrency-model)
-6. [Thread Safety](#thread-safety)
-7. [Middleware System](#middleware-system)
-8. [Event Filtering](#event-filtering)
-9. [Batch Processing](#batch-processing)
-10. [Global Event Bus](#global-event-bus)
-11. [Testing Implementation](#testing-implementation)
-12. [Performance Considerations](#performance-considerations)
-13. [Design Decisions](#design-decisions)
-14. [How to Extend This Library](#how-to-extend-this-library)
-15. [Common Questions](#common-questions)
-16. [Testing Tips](#testing-tips)
+3. [Provider Architecture](#provider-architecture)
+4. [Event Types and Data Structures](#event-types-and-data-structures)
+5. [Event Bus Implementation](#event-bus-implementation)
+6. [Concurrency Model](#concurrency-model)
+7. [Thread Safety](#thread-safety)
+8. [Middleware System](#middleware-system)
+9. [Event Filtering](#event-filtering)
+10. [Batch Processing](#batch-processing)
+11. [Global Event Bus](#global-event-bus)
+12. [Testing Implementation](#testing-implementation)
+13. [Performance Considerations](#performance-considerations)
+14. [Design Decisions](#design-decisions)
+15. [How to Extend This Library](#how-to-extend-this-library)
+16. [Common Questions](#common-questions)
+17. [Testing Tips](#testing-tips)
 
 ## Overview
 
@@ -25,7 +26,7 @@ Gossip is a lightweight, type-safe event bus library for Go that implements the 
 The implementation provides:
 - Strongly-typed events with `EventType` constants
 - Async by default with worker pools
-- Synchronous publishing option
+- Pluggable transport providers (in-memory, Redis)
 - Event filtering capabilities
 - Batch processing features
 - Middleware support
@@ -76,39 +77,78 @@ func CreateUser(email, username string) error {
 
 Now `CreateUser` doesn't give a damn about emails, logs, metrics, notifications. It just says "Hey, a user was created" and **OTHER PARTS** of the code react to it. Want to add SMS? Just subscribe a new processor. No touching the original code.
 
+## Provider Architecture
+
+Gossip implements a flexible provider-based architecture that allows pluggable transport mechanisms. This design enables the same API to work with different underlying technologies like in-memory channels or distributed systems like Redis.
+
+### Provider Interface
+
+The `Provider` interface defines the contract that all transport implementations must satisfy:
+
+```go
+type Provider interface {
+    Publish(event *Event) error
+    Subscribe(eventType EventType, processor EventProcessor) (subscriptionId string, err error)
+    Unsubscribe(subscriptionID string) error
+    Shutdown() error
+}
+```
+
+### Available Providers
+
+1. **InMemoryProvider** - Uses Go channels for local, in-process event communication
+2. **RedisProvider** - Uses Redis Pub/Sub for distributed event communication across multiple services
+
+### Configuration
+
+The new architecture introduces a driver-based configuration system:
+
+```go
+type Config struct {
+    Driver     string // "memory" or "redis"
+    Workers    int    // Number of worker goroutines
+    BufferSize int    // Size of the event channel buffer
+    RedisAddr  string // Redis address (for Redis provider)
+    RedisPwd   string // Redis password (for Redis provider)
+    RedisDB    int    // Redis database (for Redis provider)
+}
+```
+
 ## Core Architecture
 
 The core of Gossip is built around several key components:
 
-1. **EventBus** - The main coordinator that manages subscriptions and event dispatch
-2. **Event** - The data structure that carries information through the system
-3. **Eventprocessor** - Functions that process events
-4. **Worker Pool** - Goroutines that handle asynchronous event processing
+1. **EventBus** - The main coordinator that delegates operations to the underlying provider
+2. **Provider** - Interface that abstracts the underlying transport mechanism (in-memory, Redis, etc.)
+3. **Event** - The data structure that carries information through the system
+4. **EventProcessor** - Functions that process events
 5. **Middleware** - Pluggable functionality that wraps processors
 6. **Filters** - Conditional execution of processors based on event properties
 
 ### Core Data Types
 
 ```go
-// Eventprocessor is a function that processes events.
-type Eventprocessor func(ctx context.Context, event *Event) error
+// EventProcessor is a function that processes events.
+type EventProcessor func(ctx context.Context, event *Event) error
 
 // Subscription represents a registered event processor.
 type Subscription struct {
-    ID      string
-    Type    EventType
-    processor Eventprocessor
+    Id         string
+    Type       EventType
+    EProcessor EventProcessor
 }
 
-// EventBus manages event publishing and subscription.
+// EventBus manages the specific provider.
 type EventBus struct {
-    mu            sync.RWMutex
-    subscriptions map[EventType][]*Subscription
-    workers       int
-    eventChan     chan *Event
-    ctx           context.Context
-    cancel        context.CancelFunc
-    wg            sync.WaitGroup
+    provider Provider
+}
+
+// Provider defines the behavior for an event transport engine (e.g., Memory, Redis, NATS).
+type Provider interface {
+    Publish(event *Event) error                                                                     // Publish sends an event to the underlying transport.
+    Subscribe(eventType EventType, processor EventProcessor) (subscriptionId string, err error) // Subscribe registers a processor for a topic.
+    Unsubscribe(subscriptionID string) error                                                              // Unsubscribe removes a subscription.
+    Shutdown() error                                                                                      // Shutdown cleans up resources.
 }
 ```
 

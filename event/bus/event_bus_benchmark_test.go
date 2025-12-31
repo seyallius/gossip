@@ -80,43 +80,6 @@ func BenchmarkEventBus_PublishAsync_WithContention(b *testing.B) {
 	})
 }
 
-// BenchmarkEventBus_PublishSync_HeavyPayload
-//
-//	1847127               577.0 ns/op          1280 B/op          4 allocs/op
-//	2605665               432.0 ns/op          1280 B/op          4 allocs/op
-//	2978712               482.5 ns/op          1280 B/op          4 allocs/op
-func BenchmarkEventBus_PublishSync_HeavyPayload(b *testing.B) {
-	bus := NewEventBus(&Config{Workers: 4, BufferSize: 1000})
-	defer bus.Shutdown()
-
-	type HeavyData struct {
-		ID      string
-		Data    [1024]byte // 1KB payload
-		Extra   map[string]interface{}
-		Numbers []int64
-	}
-
-	// Register handler
-	bus.Subscribe("heavy.event", func(ctx context.Context, e *Event) error {
-		// Copy data to simulate processing
-		_ = e.Data.(HeavyData)
-		return nil
-	})
-
-	ctx := context.Background()
-	data := HeavyData{
-		ID:      "test",
-		Data:    [1024]byte{},
-		Extra:   make(map[string]interface{}),
-		Numbers: make([]int64, 100),
-	}
-
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		bus.PublishSync(ctx, NewEvent("heavy.event", data))
-	}
-}
-
 // -------------------------------------------- Memory Allocation Benchmarks --------------------------------------------
 
 // BenchmarkEventBus_MemoryAllocations_Publish
@@ -248,11 +211,7 @@ func BenchmarkEventBus_BufferFull(b *testing.B) {
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
-			select {
-			case bus.eventChan <- evt:
-				// Published
-			default:
-				// Buffer full - dropped
+			if err := bus.Publish(evt); err != nil {
 				atomic.AddInt32(&dropped, 1)
 			}
 		}
