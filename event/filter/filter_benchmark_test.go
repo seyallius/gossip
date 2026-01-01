@@ -10,16 +10,18 @@ import (
 )
 
 // run from cwd: go test -bench=. -benchmem -cpuprofile=cpu.prof ./ -count=3
-// cpu profilin: go tool pprof -http=:8080 cpu.prof
-// ram profilin: go test -bench=. -benchmem -memprofile=mem.prof ./ -count=3
+// cpu profiling: go tool pprof -http=:8080 cpu.prof
+// ram profiling: go test -bench=. -benchmem -memprofile=mem.prof ./ -count=3
 
-// -------------------------------------------- Filter Benchmarks --------------------------------------------
+// Benchmark Results (go test -bench=. -benchmem -count=3):
+// BenchmarkFilterByMetadata-6               	93002470	        13.03 ns/op	       0 B/op	       0 allocs/op
+// BenchmarkFilterByMetadata-6               	94490792	        12.51 ns/op	       0 B/op	       0 allocs/op
+// BenchmarkFilterByMetadata-6               	98218222	        12.09 ns/op	       0 B/op	       0 allocs/op
+// BenchmarkAndFilter-6                      	26146206	        45.40 ns/op	       0 B/op	       0 allocs/op
+// BenchmarkAndFilter-6                      	37489888	        31.89 ns/op	       0 B/op	       0 allocs/op
+// BenchmarkAndFilter-6                      	24769748	        48.21 ns/op	       0 B/op	       0 allocs/op
 
-// BenchmarkFilterByMetadata
-//
-//	75219084                14.43 ns/op            0 B/op          0 allocs/op
-//	78450102                14.11 ns/op            0 B/op          0 allocs/op
-//	82441532                13.33 ns/op            0 B/op          0 allocs/op
+// BenchmarkFilterByMetadata benchmarks filtering by metadata
 func BenchmarkFilterByMetadata(b *testing.B) {
 	filter := FilterByMetadata("priority", "high")
 	evt := event.NewEvent("test", nil).WithMetadata("priority", "high")
@@ -31,11 +33,7 @@ func BenchmarkFilterByMetadata(b *testing.B) {
 	}
 }
 
-// BenchmarkAndFilter
-//
-//	22760049                50.70 ns/op            0 B/op          0 allocs/op
-//	21920749                50.42 ns/op            0 B/op          0 allocs/op
-//	21688159                51.12 ns/op            0 B/op          0 allocs/op
+// BenchmarkAndFilter benchmarks combining filters with AND operation
 func BenchmarkAndFilter(b *testing.B) {
 	filter1 := FilterByMetadata("priority", "high")
 	filter2 := FilterByMetadata("source", "api")
@@ -51,32 +49,5 @@ func BenchmarkAndFilter(b *testing.B) {
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
 		combinedFilter(evt)
-	}
-}
-
-// BenchmarkComplexFilter
-//
-//	33202945                38.39 ns/op            0 B/op          0 allocs/op
-//	30754526                36.52 ns/op            0 B/op          0 allocs/op
-//	31771352                36.92 ns/op            0 B/op          0 allocs/op
-func BenchmarkComplexFilter(b *testing.B) {
-	priorityHigh := FilterByMetadata("priority", "high")
-	sourceAPI := FilterByMetadata("source", "api")
-	statusActive := FilterByMetadata("status", "active")
-
-	complexFilter := And(
-		Or(priorityHigh, sourceAPI),
-		statusActive,
-	)
-
-	evt := event.NewEvent("test", nil).
-		WithMetadata("priority", "high").
-		WithMetadata("source", "api").
-		WithMetadata("status", "active")
-
-	b.ResetTimer()
-	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
-		complexFilter(evt)
 	}
 }

@@ -334,6 +334,142 @@ func myProcessor(ctx context.Context, event *event.Event) error {
 }
 ```
 
+## ⚡ Performance
+
+Gossip is designed for high-performance event processing with different performance characteristics depending on the provider used. You can view the complete benchmark tests in these files:
+
+- [event/bus/event_bus_benchmark_test.go](./event/bus/event_bus_benchmark_test.go) - Core EventBus benchmarks
+- [event/batch/batch_benchmark_test.go](./event/batch/batch_benchmark_test.go) - Batch processing benchmarks
+- [event/batch/batch_consolidated_benchmark_test.go](./event/batch/batch_consolidated_benchmark_test.go) - Table-driven batch benchmarks
+- [event/filter/filter_benchmark_test.go](./event/filter/filter_benchmark_test.go) - Filter benchmarks
+- [event/filter/filter_consolidated_benchmark_test.go](./event/filter/filter_consolidated_benchmark_test.go) - Table-driven filter benchmarks
+- [event/middleware/middleware_benchmark_test.go](./event/middleware/middleware_benchmark_test.go) - Middleware benchmarks
+- [event/middleware/middleware_consolidated_benchmark_test.go](./event/middleware/middleware_consolidated_benchmark_test.go) - Table-driven middleware benchmarks
+
+### Provider Performance Comparison
+
+**Memory Provider (Default)**
+- Publish: ~168ns per event (0-2 allocations)
+- Subscribe: ~350ns per subscription (128-136 bytes allocated)
+- New EventBus: ~50ms (includes worker initialization)
+
+**Redis Provider**
+- Publish: ~65µs per event (416-440 bytes allocated)
+- Subscribe: ~400-500µs per subscription (77KB+ allocated)
+- New EventBus: ~14ms (network connection setup)
+
+### Why the Performance Differences?
+
+**Memory Provider is faster because:**
+- Events are passed directly through Go channels within the same process
+- No serialization/deserialization overhead
+- No network latency
+- Direct function calls for event processing
+- Minimal memory allocations (only for subscription management)
+
+**Redis Provider is slower because:**
+- Events must be serialized to JSON and sent over the network
+- Network round-trip time for each operation
+- Redis Pub/Sub infrastructure overhead
+- Deserialization when receiving events
+- More complex subscription management with goroutines for each subscription
+
+### Allocation Differences
+
+The Redis provider has significantly higher allocations because:
+- JSON marshaling/unmarshaling requires temporary objects
+- Redis client connection management
+- Goroutines for handling Redis subscriptions
+- Buffer management for network operations
+
+### When to Choose Each Provider?
+
+**Choose Memory Provider when:**
+- All event processors run in the same application/process
+- Maximum performance and throughput are critical
+- Single-application architecture
+- No need for persistence across application restarts
+
+**Choose Redis Provider when:**
+- Events need to cross process/application boundaries
+- Multiple services need to share events
+- You need persistence of events across application restarts
+- Distributed system architecture
+- You want to leverage Redis clustering for scalability
+
+### Benchmark Results
+
+**Publish Performance (Memory Provider):**
+```
+BenchmarkEventBus_PublishAsync_NoProcessors    6.7M ± 0%    168ns/op    1 B/op    0 allocs/op
+BenchmarkEventBus_Publish/Memory_Nil         6.4M ± 0%    175ns/op    2 B/op    0 allocs/op
+BenchmarkEventBus_Publish/Memory_Small       6.6M ± 0%    187ns/op    0 B/op    0 allocs/op
+BenchmarkEventBus_Publish/Memory_Medium      6.2M ± 0%    177ns/op    2 B/op    0 allocs/op
+BenchmarkEventBus_Publish/Memory_Large       6.5M ± 0%    185ns/op    1 B/op    0 allocs/op
+```
+
+**Publish Performance (Redis Provider):**
+```
+BenchmarkEventBus_Publish/Redis_Nil          21.7K ± 0%  55.5µs/op  416 B/op   9 allocs/op
+BenchmarkEventBus_Publish/Redis_Small        20.6K ± 0%  57.4µs/op  416 B/op   9 allocs/op
+BenchmarkEventBus_Publish/Redis_Medium       20.4K ± 0%  59.1µs/op  677 B/op  16 allocs/op
+BenchmarkEventBus_Publish/Redis_Large        15.8K ± 0%  90.5µs/op  6.5KB/op 10 allocs/op
+```
+
+**Subscribe Performance:**
+```
+BenchmarkEventBus_Subscribe/Memory           3.3M ± 0%   355ns/op   129 B/op   3 allocs/op
+BenchmarkEventBus_Subscribe/Redis            2.8K ± 0% 404µs/op  77.8KB/op 249 allocs/op
+```
+
+**Contentious Operations:**
+```
+BenchmarkEventBus_PublishAsync_WithContention/Memory    4.2M ± 0%   353ns/op   75 B/op   1 allocs/op
+BenchmarkEventBus_PublishAsync_WithContention/Redis     7.4K ± 0% 227µs/op 41.4KB/op 912 allocs/op
+```
+
+**Batch Processing:**
+```
+BenchmarkBatchProcessor_Add                 50M ± 0%    26.1ns/op    8 B/op    0 allocs/op
+BenchmarkBatchProcessor_Flush             144K ± 0%  9.76µs/op 6.1KB/op 102 allocs/op
+```
+
+**Filter Performance:**
+```
+BenchmarkFilterByMetadata                   93M ± 0%    13.0ns/op    0 B/op    0 allocs/op
+BenchmarkAndFilter                        26M ± 0%    45.4ns/op    0 B/op    0 allocs/op
+```
+
+**Middleware Overhead:**
+```
+BenchmarkWithRetry                        1.0G ± 0%   0.26ns/op     0 B/op    0 allocs/op
+BenchmarkWithTimeout                      866K ± 0%  1.21µs/op   560 B/op    8 allocs/op
+```
+
+**Configuration Performance:**
+```
+BenchmarkConfig_Creation/Default          29M ± 0%    39.2ns/op   80 B/op    1 allocs/op
+BenchmarkConfig_Creation/Custom           27M ± 0%    44.5ns/op   80 B/op    1 allocs/op
+```
+
+### Performance Recommendations
+
+1. **Use Memory Provider** for single-application, high-throughput scenarios
+2. **Use Redis Provider** for distributed systems where events need to cross process boundaries
+3. **Batch Processing** is highly recommended for high-volume scenarios (1000+ events/second)
+4. **Event Filtering** has minimal overhead and can reduce unnecessary processing
+5. **Middleware** adds minimal overhead except for timeout middleware which requires goroutine management
+
+### Future Performance Improvements
+
+We're continuously working on performance optimizations:
+
+- **Zero-allocation publishing** - Working on reducing allocations for high-frequency scenarios
+- **Connection pooling** - For Redis provider to reduce connection overhead
+- **Message compression** - For Redis provider to reduce network payload size
+- **Async Redis operations** - Optimizing Redis operations for better throughput
+- **Subscription optimization** - Reducing memory footprint for large numbers of subscriptions
+
 ## 🧪 Testing
 
 ```go

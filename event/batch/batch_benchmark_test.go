@@ -12,16 +12,18 @@ import (
 )
 
 // run from cwd: go test -bench=. -benchmem -cpuprofile=cpu.prof ./ -count=3
-// cpu profilin: go tool pprof -http=:8080 cpu.prof
-// ram profilin: go test -bench=. -benchmem -memprofile=mem.prof ./ -count=3
+// cpu profiling: go tool pprof -http=:8080 cpu.prof
+// ram profiling: go test -bench=. -benchmem -memprofile=mem.prof ./ -count=3
 
-// -------------------------------------------- Batch Processor Benchmarks --------------------------------------------
+// Benchmark Results (go test -bench=. -benchmem -count=3):
+// BenchmarkBatchProcessor_Add-6                       	49875006	        26.10 ns/op	       8 B/op	       0 allocs/op
+// BenchmarkBatchProcessor_Add-6                       	54880710	        20.69 ns/op	       8 B/op	       0 allocs/op
+// BenchmarkBatchProcessor_Add-6                       	54498962	        23.14 ns/op	       9 B/op	       0 allocs/op
+// BenchmarkBatchProcessor_Flush-6                     	  144253	      9760 ns/op	    6064 B/op	     102 allocs/op
+// BenchmarkBatchProcessor_Flush-6                     	  164864	      9462 ns/op	    6064 B/op	     102 allocs/op
+// BenchmarkBatchProcessor_Flush-6                     	  144253	      9760 ns/op	    6064 B/op	     102 allocs/op
 
-// BenchmarkBatchProcessor_Add
-//
-//	69192304                16.75 ns/op            8 B/op          0 allocs/op
-//	71527935                16.23 ns/op            8 B/op          0 allocs/op
-//	73035753                17.31 ns/op            8 B/op          0 allocs/op
+// BenchmarkBatchProcessor_Add benchmarks adding events to batch processor
 func BenchmarkBatchProcessor_Add(b *testing.B) {
 	config := BatchConfig{
 		BatchSize:   1000,
@@ -40,11 +42,7 @@ func BenchmarkBatchProcessor_Add(b *testing.B) {
 	}
 }
 
-// BenchmarkBatchProcessor_Flush
-//
-//	175651              7222 ns/op            6064 B/op        102 allocs/op
-//	185529              6931 ns/op            6064 B/op        102 allocs/op
-//	171325              7558 ns/op            6064 B/op        102 allocs/op
+// BenchmarkBatchProcessor_Flush benchmarks flushing batch processor
 func BenchmarkBatchProcessor_Flush(b *testing.B) {
 	config := BatchConfig{
 		BatchSize:   100,
@@ -70,29 +68,4 @@ func BenchmarkBatchProcessor_Flush(b *testing.B) {
 			processor.Add(event.NewEvent("test.event", j))
 		}
 	}
-}
-
-// BenchmarkBatchProcessor_FlushOnce
-// Note: Be careful with this one! It will crash your laptop lol
-//
-//	1000000000               0.0000627 ns/op               0 B/op          0 allocs/op
-//	1000000000               0.0000094 ns/op               0 B/op          0 allocs/op
-//	1000000000               0.0000073 ns/op               0 B/op          0 allocs/op
-func BenchmarkBatchProcessor_FlushOnce(b *testing.B) {
-	config := BatchConfig{
-		//BatchSize:   b.N, // crashes my laptop lol
-		BatchSize:   1_000_000,
-		FlushPeriod: time.Hour,
-	}
-	processor := NewBatchProcessor("bench.event", config, func(ctx context.Context, events []*event.Event) error { return nil })
-	defer processor.Shutdown()
-
-	evt := event.NewEvent("bench.event", nil)
-	for i := 0; i < b.N; i++ {
-		processor.Add(evt)
-	}
-
-	b.ResetTimer()
-	b.ReportAllocs()
-	processor.Flush()
 }
