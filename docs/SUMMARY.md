@@ -1,15 +1,21 @@
 # Summary
 
-## Use headings to create page groups like this one
+## Introduction
 
-* [First page’s title](page1/README.md)
-    * [Some child page](page1/page1-1.md)
-    * [Some other child page](part1/page1-2.md)
+* [Overview](README.md)
+* [Getting Started](getting-started.md)
 
-* [Second page’s title](page2/README.md)
-    * [Some child page](page2/page2-1.md)
-    * [Some other child page](part2/page2-2.md)
+## Implementation Guide
 
-## A second-page group
+* [Overview](implementation/overview.md)
+* [API Reference](implementation/api.md)
+* [Architecture](implementation/architecture.md)
 
-* [Another page](another-page.md)
+## Examples
+
+* [Examples Overview](examples/README.md)
+* [Authentication Service](examples/auth_service.md)
+* [E-commerce Platform](examples/ecommerce.md)
+* [Microservices Communication](examples/microservices.md)
+* [Error Handling](examples/error_handling.md)
+* [Type Assertion Example](examples/type_assertion_example.md)
