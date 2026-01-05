@@ -25,6 +25,9 @@ Using a common event bus across multiple services for communication.
 ### 4. Self-Registering Handlers
 Services registering their own event handlers upon initialization.
 
+### 5. Bulk Subscription
+Using SubscribeMultiple to handle multiple related events across services.
+
 ## Code Walkthrough
 
 ### Event Types Definition
@@ -37,6 +40,38 @@ const (
 	EmailServiceSent        gossip.EventType = "email_service.email.sent"
 	NotificationServiceSent gossip.EventType = "notification_service.sent"
 )
+```
+
+### Bulk Subscription Across Services
+
+```go
+// crossServiceAuditProcessor handles events from multiple services
+func crossServiceAuditProcessor(ctx context.Context, event *gossip.Event) error {
+	switch event.Type {
+	case UserServiceUserCreated:
+		data := event.Data.(*UserCreatedEvent)
+		log.Printf("[Cross-Service Audit] User created: %s (%s)", data.Username, data.Email)
+	case UserServiceUserUpdated:
+		log.Printf("[Cross-Service Audit] User updated")
+	case EmailServiceSent:
+		log.Printf("[Cross-Service Audit] Email sent")
+	case NotificationServiceSent:
+		log.Printf("[Cross-Service Audit] Notification sent")
+	}
+	return nil
+}
+
+// Example of using SubscribeMultiple to handle events from different services
+func setupCrossServiceAuditHandlers(bus *gossip.EventBus) []string {
+	crossServiceEvents := []gossip.EventType{
+		UserServiceUserCreated,
+		UserServiceUserUpdated,
+		EmailServiceSent,
+		NotificationServiceSent,
+	}
+
+	return bus.SubscribeMultiple(crossServiceEvents, crossServiceAuditProcessor)
+}
 ```
 
 ### Event Data Structures

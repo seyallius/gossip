@@ -38,6 +38,16 @@ type Provider interface {
     Unsubscribe(subscriptionID string) error                                                              // Unsubscribe removes a subscription.
     Shutdown() error                                                                                      // Shutdown cleans up resources.
 }
+
+// EventBus provides methods for event handling.
+type EventBus struct {
+    Subscribe(eventType EventType, processor EventProcessor) string                    // Subscribe registers a processor for an event type.
+    SubscribeMultiple(eventTypes []EventType, processor EventProcessor) []string       // SubscribeMultiple registers a processor for multiple event types.
+    Unsubscribe(subscriptionId string)                                                 // Unsubscribe removes a subscription by ID.
+    UnsubscribeMultiple(subscriptionIds []string)                                      // UnsubscribeMultiple removes multiple subscriptions by IDs.
+    Publish(event *Event) error                                                        // Publish sends an event to the bus.
+    Shutdown() error                                                                   // Shutdown cleans up resources.
+}
 ```
 
 ### Provider Architecture

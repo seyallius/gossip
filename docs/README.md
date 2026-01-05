@@ -58,6 +58,7 @@ Now `CreateUser` doesn't give a damn about emails, logs, metrics, notifications.
 - **🔌 Pluggable providers** - In-memory or Redis Pub/Sub support
 - **🎯 Event filtering** - Conditional processor execution
 - **📦 Batch processing** - Process multiple events efficiently
+- **🔄 Bulk subscription** - Subscribe to multiple event types with a single processor
 - **🔧 Middleware support** - Retry, timeout, logging, recovery
 - **🎚️ Priority queues** - Handle critical events first
 - **🛡️ Thread-safe** - Concurrent publish/subscribe operations

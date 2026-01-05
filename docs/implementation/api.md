@@ -81,6 +81,103 @@ type Config struct {
 
 Configuration for the event bus.
 
+### Methods
+
+#### Subscribe
+
+```go
+func (eb *EventBus) Subscribe(eventType EventType, processor EventProcessor) string
+```
+
+Registers a processor for a specific event type and returns a subscription ID.
+
+**Example:**
+```go
+id := eventBus.Subscribe(UserCreated, func(ctx context.Context, event *Event) error {
+    data := event.Data.(*UserData)
+    log.Printf("User created: %s", data.Username)
+    return nil
+})
+```
+
+#### SubscribeMultiple
+
+```go
+func (eb *EventBus) SubscribeMultiple(eventTypes []EventType, processor EventProcessor) []string
+```
+
+Registers a processor for multiple event types and returns subscription IDs.
+
+**Example:**
+```go
+eventTypes := []gossip.EventType{UserCreated, UserUpdated, UserDeleted}
+ids := eventBus.SubscribeMultiple(eventTypes, func(ctx context.Context, event *Event) error {
+    switch event.Type {
+    case UserCreated:
+        log.Printf("User created: %v", event.Data)
+    case UserUpdated:
+        log.Printf("User updated: %v", event.Data)
+    case UserDeleted:
+        log.Printf("User deleted: %v", event.Data)
+    }
+    return nil
+})
+```
+
+#### Unsubscribe
+
+```go
+func (eb *EventBus) Unsubscribe(subscriptionId string)
+```
+
+Removes a subscription by its ID.
+
+**Example:**
+```go
+eventBus.Unsubscribe(subscriptionId)
+```
+
+#### UnsubscribeMultiple
+
+```go
+func (eb *EventBus) UnsubscribeMultiple(subscriptionIDs []string)
+```
+
+Removes multiple subscriptions by their IDs.
+
+**Example:**
+```go
+eventBus.UnsubscribeMultiple([]string{id1, id2, id3})
+```
+
+#### Publish
+
+```go
+func (eb *EventBus) Publish(event *Event) error
+```
+
+Publishes an event to the bus.
+
+**Example:**
+```go
+event := gossip.NewEvent(UserCreated, &UserData{
+    UserID: "123",
+    Username: "alice",
+})
+err := eventBus.Publish(event)
+if err != nil {
+    log.Printf("Failed to publish event: %v", err)
+}
+```
+
+#### Shutdown
+
+```go
+func (eb *EventBus) Shutdown() error
+```
+
+Shuts down the event bus and cleans up resources.
+
 #### DefaultConfig
 
 ```go

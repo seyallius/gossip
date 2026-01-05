@@ -54,6 +54,37 @@ func main() {
 		Username: "alice",
 	})
 	eventBus.Publish(evnt)
+
+	// Example of SubscribeMultiple - subscribe to multiple event types with one processor
+	const (
+		UserUpdated event.EventType = "user.updated"
+		UserDeleted event.EventType = "user.deleted"
+	)
+
+	type UserUpdatedData struct {
+		UserID   string
+		Username string
+	}
+
+	eventTypes := []event.EventType{UserCreated, UserUpdated, UserDeleted}
+	subscriptionIDs := eventBus.SubscribeMultiple(eventTypes, func(ctx context.Context, eventToPub *event.Event) error {
+		switch eventToPub.Type {
+		case UserCreated:
+			data := eventToPub.Data.(*UserData)
+			log.Printf("New user: %s", data.Username)
+		case UserUpdated:
+			data := eventToPub.Data.(*UserUpdatedData)
+			log.Printf("Updated user: %s", data.Username)
+		case UserDeleted:
+			log.Printf("User deleted")
+		}
+		return nil
+	})
+
+	// Example of UnsubscribeMultiple - clean up multiple subscriptions
+	defer func() {
+		eventBus.UnsubscribeMultiple(subscriptionIDs)
+	}()
 }
 ```
 
@@ -97,6 +128,37 @@ func main() {
 		Username: "alice",
 	})
 	eventBus.Publish(evnt)
+
+	// Example of SubscribeMultiple - subscribe to multiple event types with one processor
+	const (
+		UserUpdated event.EventType = "user.updated"
+		UserDeleted event.EventType = "user.deleted"
+	)
+
+	type UserUpdatedData struct {
+		UserID   string
+		Username string
+	}
+
+	eventTypes := []event.EventType{UserCreated, UserUpdated, UserDeleted}
+	subscriptionIDs := eventBus.SubscribeMultiple(eventTypes, func(ctx context.Context, eventToPub *event.Event) error {
+		switch eventToPub.Type {
+		case UserCreated:
+			data := eventToPub.Data.(*UserData)
+			log.Printf("New user: %s", data.Username)
+		case UserUpdated:
+			data := eventToPub.Data.(*UserUpdatedData)
+			log.Printf("Updated user: %s", data.Username)
+		case UserDeleted:
+			log.Printf("User deleted")
+		}
+		return nil
+	})
+
+	// Example of UnsubscribeMultiple - clean up multiple subscriptions
+	defer func() {
+		eventBus.UnsubscribeMultiple(subscriptionIDs)
+	}()
 }
 ```
 
@@ -126,6 +188,33 @@ func myProcessor(ctx context.Context, event *event.Event) error {
     // Process event
     return nil
 }
+```
+
+### Multiple Event Subscription
+Subscribe to multiple event types with a single processor:
+```go
+eventTypes := []gossip.EventType{UserCreated, UserUpdated, UserDeleted}
+subscriptionIDs := eventBus.SubscribeMultiple(eventTypes, func(ctx context.Context, event *event.Event) error {
+    switch event.Type {
+    case UserCreated:
+        // Handle user created
+    case UserUpdated:
+        // Handle user updated
+    case UserDeleted:
+        // Handle user deleted
+    }
+    return nil
+})
+```
+
+### Unsubscribing
+Remove subscriptions when no longer needed:
+```go
+// Unsubscribe single subscription
+eventBus.Unsubscribe(subscriptionID)
+
+// Unsubscribe multiple subscriptions
+eventBus.UnsubscribeMultiple(subscriptionIDs)
 ```
 
 ## ⚙️ Configuration

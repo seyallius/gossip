@@ -26,6 +26,9 @@ Asynchronous inventory updates and other operations that don't block the main fl
 ### 4. Pipeline Processing
 Sequential event processing patterns for order fulfillment.
 
+### 5. Bulk Subscription
+Using SubscribeMultiple to handle multiple related events with a single processor.
+
 ## Code Walkthrough
 
 ### Event Types Definition
@@ -39,6 +42,45 @@ const (
 	OrderDelivered gossip.EventType = "order.delivered"
 	OrderCancelled gossip.EventType = "order.cancelled"
 )
+```
+
+### Bulk Subscription Example
+
+```go
+// orderNotificationProcessor handles multiple order lifecycle events
+func orderNotificationProcessor(ctx context.Context, event *gossip.Event) error {
+	switch event.Type {
+	case OrderCreated:
+		data := event.Data.(*OrderData)
+		log.Printf("[Notification] Order %s created for customer %s", data.OrderID, data.CustomerID)
+	case OrderPaid:
+		data := event.Data.(*OrderData)
+		log.Printf("[Notification] Order %s has been paid", data.OrderID)
+	case OrderShipped:
+		data := event.Data.(*OrderData)
+		log.Printf("[Notification] Order %s has been shipped", data.OrderID)
+	case OrderDelivered:
+		data := event.Data.(*OrderData)
+		log.Printf("[Notification] Order %s has been delivered", data.OrderID)
+	case OrderCancelled:
+		data := event.Data.(*OrderData)
+		log.Printf("[Notification] Order %s has been cancelled", data.OrderID)
+	}
+	return nil
+}
+
+// Example of using SubscribeMultiple for order lifecycle events
+func setupOrderNotificationHandlers(bus *gossip.EventBus) []string {
+	orderEvents := []gossip.EventType{
+		OrderCreated,
+		OrderPaid,
+		OrderShipped,
+		OrderDelivered,
+		OrderCancelled,
+	}
+
+	return bus.SubscribeMultiple(orderEvents, orderNotificationProcessor)
+}
 ```
 
 ### Event Data Structures

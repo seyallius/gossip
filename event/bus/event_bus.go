@@ -67,13 +67,31 @@ func (eb *EventBus) Subscribe(eventType event.EventType, eventProcessor sub.Even
 	return id
 }
 
+// SubscribeMultiple registers a processor for multiple event types and returns subscription IDs.
+func (eb *EventBus) SubscribeMultiple(eventTypes []event.EventType, processor sub.EventProcessor) []string {
+	subscriptionIDs := make([]string, 0, len(eventTypes))
+	for _, eventType := range eventTypes {
+		id := eb.Subscribe(eventType, processor)
+		subscriptionIDs = append(subscriptionIDs, id)
+	}
+	return subscriptionIDs
+}
+
 // Publish delegates to the provider.
 func (eb *EventBus) Publish(eventToPub *event.Event) error {
 	return eb.provider.Publish(eventToPub)
 }
 
+// Unsubscribe removes a subscription by its ID.
 func (eb *EventBus) Unsubscribe(subscriptionId string) {
 	_ = eb.provider.Unsubscribe(subscriptionId)
+}
+
+// UnsubscribeMultiple removes multiple subscriptions by their IDs.
+func (eb *EventBus) UnsubscribeMultiple(subscriptionIDs []string) {
+	for _, id := range subscriptionIDs {
+		eb.Unsubscribe(id)
+	}
 }
 
 // Shutdown delegates to the provider.

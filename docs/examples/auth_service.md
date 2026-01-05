@@ -26,6 +26,9 @@ Using metadata for request tracking and context (request IDs, session IDs, etc.)
 ### 4. Security Patterns
 Implementing security monitoring with events.
 
+### 5. Bulk Subscription
+Using SubscribeMultiple to handle multiple related events with a single processor.
+
 ## Code Walkthrough
 
 ### Event Types Definition
@@ -40,6 +43,39 @@ const (
 	AccountLocked    gossip.EventType = "auth.account.locked"
 	TwoFactorEnabled gossip.EventType = "auth.2fa.enabled"
 )
+```
+
+### Bulk Subscription Example
+
+```go
+// securityAuditProcessor handles multiple security-related events
+func securityAuditProcessor(ctx context.Context, event *gossip.Event) error {
+	switch event.Type {
+	case UserLoggedIn:
+		data := event.Data.(*LoginData)
+		log.Printf("[Security Audit] User %s logged in from %s", data.Username, data.IPAddress)
+	case UserLoggedOut:
+		log.Printf("[Security Audit] User logged out")
+	case AccountLocked:
+		log.Printf("[Security Audit] Account locked")
+	case PasswordChanged:
+		data := event.Data.(*PasswordChangedData)
+		log.Printf("[Security Audit] Password changed for user %s", data.UserID)
+	}
+	return nil
+}
+
+// Example of using SubscribeMultiple for security events
+func setupSecurityHandlers(bus *gossip.EventBus) []string {
+	securityEvents := []gossip.EventType{
+		UserLoggedIn,
+		UserLoggedOut,
+		AccountLocked,
+		PasswordChanged,
+	}
+
+	return bus.SubscribeMultiple(securityEvents, securityAuditProcessor)
+}
 ```
 
 ### Event Data Structures
