@@ -66,27 +66,27 @@ func BenchmarkConfig_NewEventBus_DifferentConfigs(b *testing.B) {
 	}{
 		{
 			"Memory_Small",
-			&Config{Driver: "memory", Workers: 1, BufferSize: 10},
+			&Config{Driver: DriverInMemory, Workers: 1, BufferSize: 10},
 		},
 		{
 			"Memory_Medium",
-			&Config{Driver: "memory", Workers: 10, BufferSize: 100},
+			&Config{Driver: DriverInMemory, Workers: 10, BufferSize: 100},
 		},
 		{
 			"Memory_Large",
-			&Config{Driver: "memory", Workers: 100, BufferSize: 1000},
+			&Config{Driver: DriverInMemory, Workers: 100, BufferSize: 1000},
 		},
 		{
 			"Redis_Small",
-			&Config{Driver: "redis", RedisAddr: "localhost:6379", Workers: 1, BufferSize: 10},
+			&Config{Driver: DriverRedis, RedisConfig: &RedisConfig{RedisAddr: "localhost:6379"}, Workers: 1, BufferSize: 10},
 		},
 		{
 			"Redis_Medium",
-			&Config{Driver: "redis", RedisAddr: "localhost:6379", Workers: 10, BufferSize: 100},
+			&Config{Driver: DriverRedis, RedisConfig: &RedisConfig{RedisAddr: "localhost:6379"}, Workers: 10, BufferSize: 100},
 		},
 		{
 			"Redis_Large",
-			&Config{Driver: "redis", RedisAddr: "localhost:6379", Workers: 100, BufferSize: 1000},
+			&Config{Driver: DriverRedis, RedisConfig: &RedisConfig{RedisAddr: "localhost:6379"}, Workers: 100, BufferSize: 1000},
 		},
 	}
 
@@ -126,12 +126,14 @@ func BenchmarkConfig_Creation(b *testing.B) {
 			"Custom",
 			func() *Config {
 				return &Config{
-					Driver:     "memory",
+					Driver:     DriverInMemory,
 					Workers:    10,
 					BufferSize: 1000,
-					RedisAddr:  "localhost:6379",
-					RedisPwd:   "",
-					RedisDB:    0,
+					RedisConfig: &RedisConfig{
+						RedisAddr: "localhost:6379",
+						RedisPwd:  "",
+						RedisDB:   0,
+					},
 				}
 			},
 		},
@@ -179,27 +181,27 @@ func BenchmarkConfig_Variations(b *testing.B) {
 	}{
 		{
 			"Minimal",
-			&Config{Driver: "memory"},
+			&Config{Driver: DriverInMemory},
 		},
 		{
 			"MemoryOnly",
-			&Config{Driver: "memory", Workers: 4, BufferSize: 1000},
+			&Config{Driver: DriverInMemory, Workers: 4, BufferSize: 1000},
 		},
 		{
 			"RedisMinimal",
-			&Config{Driver: "redis", RedisAddr: "localhost:6379"},
+			&Config{Driver: DriverRedis, RedisConfig: &RedisConfig{RedisAddr: "localhost:6379"}},
 		},
 		{
 			"RedisFull",
-			&Config{Driver: "redis", RedisAddr: "localhost:6379", RedisPwd: "password", RedisDB: 1, Workers: 8, BufferSize: 2000},
+			&Config{Driver: DriverRedis, RedisConfig: &RedisConfig{RedisAddr: "localhost:6379", RedisPwd: "password", RedisDB: 1}, Workers: 8, BufferSize: 2000},
 		},
 		{
 			"HighConcurrency",
-			&Config{Driver: "memory", Workers: 50, BufferSize: 10000},
+			&Config{Driver: DriverInMemory, Workers: 50, BufferSize: 10000},
 		},
 		{
 			"HighBuffer",
-			&Config{Driver: "memory", Workers: 4, BufferSize: 50000},
+			&Config{Driver: DriverInMemory, Workers: 4, BufferSize: 50000},
 		},
 	}
 
@@ -223,8 +225,8 @@ func BenchmarkEventBus_Subscribe(b *testing.B) {
 		name   string
 		config *Config
 	}{
-		{"Memory", &Config{Driver: "memory", Workers: 4, BufferSize: 1000}},
-		{"Redis", &Config{Driver: "redis", RedisAddr: "localhost:6379", Workers: 4, BufferSize: 1000}},
+		{"Memory", &Config{Driver: DriverInMemory, Workers: 4, BufferSize: 1000}},
+		{"Redis", &Config{Driver: DriverRedis, RedisConfig: &RedisConfig{RedisAddr: "localhost:6379"}, Workers: 4, BufferSize: 1000}},
 	}
 
 	for _, tc := range configs {
@@ -280,8 +282,8 @@ func BenchmarkEventBus_Publish(b *testing.B) {
 		name   string
 		config *Config
 	}{
-		{"Memory", &Config{Driver: "memory", Workers: 4, BufferSize: 10000}},
-		{"Redis", &Config{Driver: "redis", RedisAddr: "localhost:6379", Workers: 4, BufferSize: 10000}},
+		{"Memory", &Config{Driver: DriverInMemory, Workers: 4, BufferSize: 10000}},
+		{"Redis", &Config{Driver: DriverRedis, RedisConfig: &RedisConfig{RedisAddr: "localhost:6379"}, Workers: 4, BufferSize: 10000}},
 	}
 
 	payloads := []struct {
@@ -328,7 +330,7 @@ func BenchmarkEventBus_PublishAsync_WithContention(b *testing.B) {
 	}{
 		{
 			"Memory",
-			&Config{Driver: "memory", Workers: 16, BufferSize: 10000},
+			&Config{Driver: DriverInMemory, Workers: 16, BufferSize: 10000},
 			func() func(ctx context.Context, e *Event) error {
 				return func(ctx context.Context, e *Event) error {
 					// Simulate 10µs of work
@@ -339,7 +341,7 @@ func BenchmarkEventBus_PublishAsync_WithContention(b *testing.B) {
 		},
 		{
 			"Redis",
-			&Config{Driver: "redis", RedisAddr: "localhost:6379", Workers: 16, BufferSize: 10000},
+			&Config{Driver: DriverRedis, RedisConfig: &RedisConfig{RedisAddr: "localhost:6379"}, Workers: 16, BufferSize: 10000},
 			func() func(ctx context.Context, e *Event) error {
 				return func(ctx context.Context, e *Event) error {
 					return nil // Redis handlers work differently
@@ -383,8 +385,8 @@ func BenchmarkEventBus_ConcurrentOperations(b *testing.B) {
 		name   string
 		config *Config
 	}{
-		{"Memory", &Config{Driver: "memory", Workers: 16, BufferSize: 10000}},
-		{"Redis", &Config{Driver: "redis", RedisAddr: "localhost:6379", Workers: 16, BufferSize: 10000}},
+		{"Memory", &Config{Driver: DriverInMemory, Workers: 16, BufferSize: 10000}},
+		{"Redis", &Config{Driver: DriverRedis, RedisConfig: &RedisConfig{RedisAddr: "localhost:6379"}, Workers: 16, BufferSize: 10000}},
 	}
 
 	for _, tc := range configs {
@@ -440,7 +442,7 @@ func BenchmarkEventBus_BufferScenarios(b *testing.B) {
 	}{
 		{
 			"Normal",
-			&Config{Driver: "memory", Workers: 4, BufferSize: 1000},
+			&Config{Driver: DriverInMemory, Workers: 4, BufferSize: 1000},
 			func() func(ctx context.Context, e *Event) error {
 				return func(ctx context.Context, e *Event) error {
 					return nil
@@ -449,7 +451,7 @@ func BenchmarkEventBus_BufferScenarios(b *testing.B) {
 		},
 		{
 			"BufferFull",
-			&Config{Driver: "memory", Workers: 1, BufferSize: 10}, // Very small buffer to force drops
+			&Config{Driver: DriverInMemory, Workers: 1, BufferSize: 10}, // Very small buffer to force drops
 			func() func(ctx context.Context, e *Event) error {
 				return func(ctx context.Context, e *Event) error {
 					time.Sleep(10 * time.Millisecond) // Slow handler to fill buffer quickly
@@ -515,12 +517,12 @@ func BenchmarkEventBus_ConfigurationScenarios(b *testing.B) {
 		name   string
 		config *Config
 	}{
-		{"Memory_1Worker", &Config{Driver: "memory", Workers: 1, BufferSize: 100}},
-		{"Memory_4Workers", &Config{Driver: "memory", Workers: 4, BufferSize: 1000}},
-		{"Memory_16Workers", &Config{Driver: "memory", Workers: 16, BufferSize: 10000}},
-		{"Redis_1Worker", &Config{Driver: "redis", RedisAddr: "localhost:6379", Workers: 1, BufferSize: 100}},
-		{"Redis_4Workers", &Config{Driver: "redis", RedisAddr: "localhost:6379", Workers: 4, BufferSize: 1000}},
-		{"Redis_16Workers", &Config{Driver: "redis", RedisAddr: "localhost:6379", Workers: 16, BufferSize: 10000}},
+		{"Memory_1Worker", &Config{Driver: DriverInMemory, Workers: 1, BufferSize: 100}},
+		{"Memory_4Workers", &Config{Driver: DriverInMemory, Workers: 4, BufferSize: 1000}},
+		{"Memory_16Workers", &Config{Driver: DriverInMemory, Workers: 16, BufferSize: 10000}},
+		{"Redis_1Worker", &Config{Driver: DriverRedis, RedisConfig: &RedisConfig{RedisAddr: "localhost:6379"}, Workers: 1, BufferSize: 100}},
+		{"Redis_4Workers", &Config{Driver: DriverRedis, RedisConfig: &RedisConfig{RedisAddr: "localhost:6379"}, Workers: 4, BufferSize: 1000}},
+		{"Redis_16Workers", &Config{Driver: DriverRedis, RedisConfig: &RedisConfig{RedisAddr: "localhost:6379"}, Workers: 16, BufferSize: 10000}},
 	}
 
 	for _, tc := range configs {
@@ -628,7 +630,7 @@ func BenchmarkProvider_NewEventBus(b *testing.B) {
 		{
 			"Memory",
 			&Config{
-				Driver:     "memory",
+				Driver:     DriverInMemory,
 				Workers:    4,
 				BufferSize: 1000,
 			},
@@ -636,10 +638,12 @@ func BenchmarkProvider_NewEventBus(b *testing.B) {
 		{
 			"Redis",
 			&Config{
-				Driver:     "redis",
-				RedisAddr:  "localhost:6379",
-				RedisPwd:   "",
-				RedisDB:    0,
+				Driver: DriverRedis,
+				RedisConfig: &RedisConfig{
+					RedisAddr: "localhost:6379",
+					RedisPwd:  "",
+					RedisDB:   0,
+				},
 				Workers:    4,
 				BufferSize: 1000,
 			},
@@ -674,7 +678,7 @@ func BenchmarkProvider_Publish_TableDriven(b *testing.B) {
 		{
 			"Memory",
 			&Config{
-				Driver:     "memory",
+				Driver:     DriverInMemory,
 				Workers:    4,
 				BufferSize: 10000,
 			},
@@ -682,10 +686,12 @@ func BenchmarkProvider_Publish_TableDriven(b *testing.B) {
 		{
 			"Redis",
 			&Config{
-				Driver:     "redis",
-				RedisAddr:  "localhost:6379",
-				RedisPwd:   "",
-				RedisDB:    0,
+				Driver: DriverRedis,
+				RedisConfig: &RedisConfig{
+					RedisAddr: "localhost:6379",
+					RedisPwd:  "",
+					RedisDB:   0,
+				},
 				Workers:    4,
 				BufferSize: 10000,
 			},
@@ -724,7 +730,7 @@ func BenchmarkProvider_Subscribe_TableDriven(b *testing.B) {
 		{
 			"Memory",
 			&Config{
-				Driver:     "memory",
+				Driver:     DriverInMemory,
 				Workers:    4,
 				BufferSize: 1000,
 			},
@@ -732,10 +738,12 @@ func BenchmarkProvider_Subscribe_TableDriven(b *testing.B) {
 		{
 			"Redis",
 			&Config{
-				Driver:     "redis",
-				RedisAddr:  "localhost:6379",
-				RedisPwd:   "",
-				RedisDB:    0,
+				Driver: DriverRedis,
+				RedisConfig: &RedisConfig{
+					RedisAddr: "localhost:6379",
+					RedisPwd:  "",
+					RedisDB:   0,
+				},
 				Workers:    4,
 				BufferSize: 1000,
 			},
@@ -790,32 +798,32 @@ func BenchmarkProvider_Publish_WithProcessors(b *testing.B) {
 	}{
 		{
 			"Memory_NoProcessors",
-			&Config{Driver: "memory", Workers: 4, BufferSize: 10000},
+			&Config{Driver: DriverInMemory, Workers: 4, BufferSize: 10000},
 			0,
 		},
 		{
 			"Memory_10Processors",
-			&Config{Driver: "memory", Workers: 4, BufferSize: 10000},
+			&Config{Driver: DriverInMemory, Workers: 4, BufferSize: 10000},
 			10,
 		},
 		{
 			"Memory_50Processors",
-			&Config{Driver: "memory", Workers: 4, BufferSize: 10000},
+			&Config{Driver: DriverInMemory, Workers: 4, BufferSize: 10000},
 			50,
 		},
 		{
 			"Redis_NoProcessors",
-			&Config{Driver: "redis", RedisAddr: "localhost:6379", Workers: 4, BufferSize: 10000},
+			&Config{Driver: DriverRedis, RedisConfig: &RedisConfig{RedisAddr: "localhost:6379"}, Workers: 4, BufferSize: 10000},
 			0,
 		},
 		{
 			"Redis_10Processors",
-			&Config{Driver: "redis", RedisAddr: "localhost:6379", Workers: 4, BufferSize: 10000},
+			&Config{Driver: DriverRedis, RedisConfig: &RedisConfig{RedisAddr: "localhost:6379"}, Workers: 4, BufferSize: 10000},
 			10,
 		},
 		{
 			"Redis_50Processors",
-			&Config{Driver: "redis", RedisAddr: "localhost:6379", Workers: 4, BufferSize: 10000},
+			&Config{Driver: DriverRedis, RedisConfig: &RedisConfig{RedisAddr: "localhost:6379"}, Workers: 4, BufferSize: 10000},
 			50,
 		},
 	}
@@ -859,7 +867,7 @@ func BenchmarkProvider_ConcurrentPublish(b *testing.B) {
 		{
 			"Memory",
 			&Config{
-				Driver:     "memory",
+				Driver:     DriverInMemory,
 				Workers:    16,
 				BufferSize: 10000,
 			},
@@ -867,10 +875,12 @@ func BenchmarkProvider_ConcurrentPublish(b *testing.B) {
 		{
 			"Redis",
 			&Config{
-				Driver:     "redis",
-				RedisAddr:  "localhost:6379",
-				RedisPwd:   "",
-				RedisDB:    0,
+				Driver: DriverRedis,
+				RedisConfig: &RedisConfig{
+					RedisAddr: "localhost:6379",
+					RedisPwd:  "",
+					RedisDB:   0,
+				},
 				Workers:    16,
 				BufferSize: 10000,
 			},
@@ -914,7 +924,7 @@ func BenchmarkProvider_ConcurrentSubscribe(b *testing.B) {
 		{
 			"Memory",
 			&Config{
-				Driver:     "memory",
+				Driver:     DriverInMemory,
 				Workers:    4,
 				BufferSize: 1000,
 			},
@@ -922,10 +932,12 @@ func BenchmarkProvider_ConcurrentSubscribe(b *testing.B) {
 		{
 			"Redis",
 			&Config{
-				Driver:     "redis",
-				RedisAddr:  "localhost:6379",
-				RedisPwd:   "",
-				RedisDB:    0,
+				Driver: DriverRedis,
+				RedisConfig: &RedisConfig{
+					RedisAddr: "localhost:6379",
+					RedisPwd:  "",
+					RedisDB:   0,
+				},
 				Workers:    4,
 				BufferSize: 1000,
 			},

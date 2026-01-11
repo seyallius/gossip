@@ -88,6 +88,35 @@ func main() {
 }
 ```
 
+> We recommend using global bus singleton instance. See below:
+
+### Basic event usage with global instance (recommended)
+
+```go
+package main
+
+import (
+	"github.com/seyallius/gossip/event"
+	"github.com/seyallius/gossip/event/bus"
+)
+
+func main() {
+	eventBus := bus.InitGlobalBus(bus.DefaultConfig())
+	defer eventBus.Shutdown()
+
+	// use eventBus just like above
+}
+
+// in another package, get the singleton instance like this:
+package another
+
+func DoSomething() {
+	err := bus.GetGlobalBus().
+		Publish(event.NewEvent(event.SomeEventType, "publishing some string event"))
+    // do something with error
+}
+```
+
 ### Using Redis Provider
 
 For distributed systems, you can use the Redis provider:
@@ -105,10 +134,12 @@ import (
 func main() {
 	// Initialize event bus with Redis provider
 	config := &bus.Config{
-		Driver:     "redis",
-		RedisAddr:  "localhost:6379",
-		RedisPwd:   "", // Set your Redis password
-		RedisDB:    0,
+		Driver: bus.DriverRedis,
+		RedisConfig: &RedisConfig{
+			RedisAddr: "localhost:6379",
+			RedisPwd:  "", // Set your Redis password
+			RedisDB:   0,
+		},
 		Workers:    10,
 		BufferSize: 1000,
 	}
@@ -243,6 +274,9 @@ Gossip supports different transport providers:
 - For distributed systems across multiple services
 - Events can cross process boundaries
 - Requires Redis server
+
+**Valkey Provider:**
+> Will panic as it's not implemented and is planned for future.
 
 ## 🧩 Components Quick Start
 

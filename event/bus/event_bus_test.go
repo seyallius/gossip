@@ -20,8 +20,8 @@ import (
 func TestConfig_DefaultConfig(t *testing.T) {
 	config := DefaultConfig()
 
-	if config.Driver != "memory" {
-		t.Errorf("Expected Driver to be 'memory', got %s", config.Driver)
+	if config.Driver != DriverInMemory {
+		t.Errorf("Expected Driver to be 'memory', got %d", config.Driver)
 	}
 
 	if config.Workers != 10 {
@@ -49,16 +49,18 @@ func TestConfig_DefaultConfig(t *testing.T) {
 func TestConfig_CustomConfig(t *testing.T) {
 	t.Run("Custom memory config", func(t *testing.T) {
 		config := &Config{
-			Driver:     "memory",
+			Driver:     DriverInMemory,
 			Workers:    20,
 			BufferSize: 2000,
-			RedisAddr:  "localhost:6379",
-			RedisPwd:   "password",
-			RedisDB:    1,
+			RedisConfig: &RedisConfig{
+				RedisAddr: "localhost:6379",
+				RedisPwd:  "password",
+				RedisDB:   1,
+			},
 		}
 
-		if config.Driver != "memory" {
-			t.Errorf("Expected Driver to be 'memory', got %s", config.Driver)
+		if config.Driver != DriverInMemory {
+			t.Errorf("Expected Driver to be 'memory', got %d", config.Driver)
 		}
 		if config.Workers != 20 {
 			t.Errorf("Expected Workers to be 20, got %d", config.Workers)
@@ -79,16 +81,18 @@ func TestConfig_CustomConfig(t *testing.T) {
 
 	t.Run("Custom redis config", func(t *testing.T) {
 		config := &Config{
-			Driver:     "redis",
+			Driver:     DriverRedis,
 			Workers:    5,
 			BufferSize: 500,
-			RedisAddr:  "192.168.1.100:6379",
-			RedisPwd:   "mysecret",
-			RedisDB:    2,
+			RedisConfig: &RedisConfig{
+				RedisAddr: "192.168.1.100:6379",
+				RedisPwd:  "mysecret",
+				RedisDB:   2,
+			},
 		}
 
-		if config.Driver != "redis" {
-			t.Errorf("Expected Driver to be 'redis', got %s", config.Driver)
+		if config.Driver != DriverRedis {
+			t.Errorf("Expected Driver to be 'redis', got %d", config.Driver)
 		}
 		if config.Workers != 5 {
 			t.Errorf("Expected Workers to be 5, got %d", config.Workers)
@@ -112,7 +116,7 @@ func TestConfig_CustomConfig(t *testing.T) {
 func TestConfig_NewEventBusWithConfig(t *testing.T) {
 	t.Run("EventBus with memory config", func(t *testing.T) {
 		config := &Config{
-			Driver:     "memory",
+			Driver:     DriverInMemory,
 			Workers:    8,
 			BufferSize: 800,
 		}
@@ -125,10 +129,12 @@ func TestConfig_NewEventBusWithConfig(t *testing.T) {
 
 	t.Run("EventBus with redis config", func(t *testing.T) {
 		config := &Config{
-			Driver:     "redis",
-			RedisAddr:  "localhost:6379",
-			RedisPwd:   "",
-			RedisDB:    0,
+			Driver: DriverRedis,
+			RedisConfig: &RedisConfig{
+				RedisAddr: "localhost:6379",
+				RedisPwd:  "",
+				RedisDB:   0,
+			},
 			Workers:    6,
 			BufferSize: 600,
 		}
@@ -141,7 +147,7 @@ func TestConfig_NewEventBusWithConfig(t *testing.T) {
 
 	t.Run("EventBus with minimal config", func(t *testing.T) {
 		config := &Config{
-			Driver: "memory",
+			Driver: DriverInMemory,
 		}
 		bus := NewEventBus(config)
 		if bus == nil {
@@ -155,7 +161,7 @@ func TestConfig_NewEventBusWithConfig(t *testing.T) {
 func TestConfig_ConfigValidation(t *testing.T) {
 	t.Run("Config with zero workers", func(t *testing.T) {
 		config := &Config{
-			Driver:     "memory",
+			Driver:     DriverInMemory,
 			Workers:    0,
 			BufferSize: 100,
 		}
@@ -168,7 +174,7 @@ func TestConfig_ConfigValidation(t *testing.T) {
 
 	t.Run("Config with zero buffer size", func(t *testing.T) {
 		config := &Config{
-			Driver:     "memory",
+			Driver:     DriverInMemory,
 			Workers:    5,
 			BufferSize: 0,
 		}
@@ -181,10 +187,12 @@ func TestConfig_ConfigValidation(t *testing.T) {
 
 	t.Run("Config with empty redis address", func(t *testing.T) {
 		config := &Config{
-			Driver:     "redis",
-			RedisAddr:  "",
-			RedisPwd:   "",
-			RedisDB:    0,
+			Driver: DriverRedis,
+			RedisConfig: &RedisConfig{
+				RedisAddr: "",
+				RedisPwd:  "",
+				RedisDB:   0,
+			},
 			Workers:    5,
 			BufferSize: 100,
 		}
@@ -200,28 +208,32 @@ func TestConfig_ConfigValidation(t *testing.T) {
 func TestConfig_ConfigurationCombinations(t *testing.T) {
 	configurations := []Config{
 		{
-			Driver:     "memory",
+			Driver:     DriverInMemory,
 			Workers:    1,
 			BufferSize: 1,
 		},
 		{
-			Driver:     "memory",
+			Driver:     DriverInMemory,
 			Workers:    100,
 			BufferSize: 10000,
 		},
 		{
-			Driver:     "redis",
-			RedisAddr:  "localhost:6379",
-			RedisPwd:   "password",
-			RedisDB:    15,
+			Driver: DriverRedis,
+			RedisConfig: &RedisConfig{
+				RedisAddr: "localhost:6379",
+				RedisPwd:  "password",
+				RedisDB:   15,
+			},
 			Workers:    1,
 			BufferSize: 1,
 		},
 		{
-			Driver:     "redis",
-			RedisAddr:  "10.0.0.1:6380",
-			RedisPwd:   "complex_password_123",
-			RedisDB:    5,
+			Driver: DriverRedis,
+			RedisConfig: &RedisConfig{
+				RedisAddr: "10.0.0.1:6380",
+				RedisPwd:  "complex_password_123",
+				RedisDB:   5,
+			},
 			Workers:    50,
 			BufferSize: 5000,
 		},
@@ -241,26 +253,30 @@ func TestConfig_ConfigurationCombinations(t *testing.T) {
 // TestConfig_ConfigEquality tests configuration equality (by checking values).
 func TestConfig_ConfigEquality(t *testing.T) {
 	config1 := &Config{
-		Driver:     "memory",
+		Driver:     DriverInMemory,
 		Workers:    10,
 		BufferSize: 1000,
-		RedisAddr:  "localhost:6379",
-		RedisPwd:   "password",
-		RedisDB:    1,
+		RedisConfig: &RedisConfig{
+			RedisAddr: "localhost:6379",
+			RedisPwd:  "password",
+			RedisDB:   1,
+		},
 	}
 
 	config2 := &Config{
-		Driver:     "memory",
+		Driver:     DriverInMemory,
 		Workers:    10,
 		BufferSize: 1000,
-		RedisAddr:  "localhost:6379",
-		RedisPwd:   "password",
-		RedisDB:    1,
+		RedisConfig: &RedisConfig{
+			RedisAddr: "localhost:6379",
+			RedisPwd:  "password",
+			RedisDB:   1,
+		},
 	}
 
 	// Check that all fields match
 	if config1.Driver != config2.Driver {
-		t.Errorf("Expected Driver to match: %s vs %s", config1.Driver, config2.Driver)
+		t.Errorf("Expected Driver to match: %d vs %d", config1.Driver, config2.Driver)
 	}
 	if config1.Workers != config2.Workers {
 		t.Errorf("Expected Workers to match: %d vs %d", config1.Workers, config2.Workers)
@@ -453,7 +469,7 @@ func TestEventBus_NewEventBus(t *testing.T) {
 
 	t.Run("NewEventBus with memory driver", func(t *testing.T) {
 		config := &Config{
-			Driver:     "memory",
+			Driver:     DriverInMemory,
 			Workers:    5,
 			BufferSize: 100,
 		}
@@ -467,10 +483,12 @@ func TestEventBus_NewEventBus(t *testing.T) {
 
 	t.Run("NewEventBus with redis driver", func(t *testing.T) {
 		config := &Config{
-			Driver:     "redis",
-			RedisAddr:  "localhost:6379",
-			RedisPwd:   "",
-			RedisDB:    0,
+			Driver: DriverRedis,
+			RedisConfig: &RedisConfig{
+				RedisAddr: "localhost:6379",
+				RedisPwd:  "",
+				RedisDB:   0,
+			},
 			Workers:    5,
 			BufferSize: 100,
 		}
@@ -495,7 +513,7 @@ func TestEventBus_NewEventBus(t *testing.T) {
 // TestEventBus_PublishSubscribeExtended tests additional publish/subscribe functionality.
 func TestEventBus_PublishSubscribeExtended(t *testing.T) {
 	bus := NewEventBus(&Config{
-		Driver:     "memory",
+		Driver:     DriverInMemory,
 		Workers:    5,
 		BufferSize: 100,
 	})
@@ -528,7 +546,7 @@ func TestEventBus_PublishSubscribeExtended(t *testing.T) {
 // TestEventBus_MultipleSubscribersExtended tests multiple subscribers with different configurations.
 func TestEventBus_MultipleSubscribersExtended(t *testing.T) {
 	bus := NewEventBus(&Config{
-		Driver:     "memory",
+		Driver:     DriverInMemory,
 		Workers:    8,
 		BufferSize: 200,
 	})
@@ -569,7 +587,7 @@ func TestEventBus_MultipleSubscribersExtended(t *testing.T) {
 // TestEventBus_UnsubscribeExtended tests unsubscribing with different scenarios.
 func TestEventBus_UnsubscribeExtended(t *testing.T) {
 	bus := NewEventBus(&Config{
-		Driver:     "memory",
+		Driver:     DriverInMemory,
 		Workers:    3,
 		BufferSize: 50,
 	})
@@ -608,7 +626,7 @@ func TestEventBus_UnsubscribeExtended(t *testing.T) {
 func TestEventBus_Configuration(t *testing.T) {
 	t.Run("Config with custom workers and buffer", func(t *testing.T) {
 		config := &Config{
-			Driver:     "memory",
+			Driver:     DriverInMemory,
 			Workers:    20,
 			BufferSize: 2000,
 		}
@@ -622,10 +640,12 @@ func TestEventBus_Configuration(t *testing.T) {
 
 	t.Run("Config with redis settings", func(t *testing.T) {
 		config := &Config{
-			Driver:     "redis",
-			RedisAddr:  "localhost:6379",
-			RedisPwd:   "password",
-			RedisDB:    1,
+			Driver: DriverRedis,
+			RedisConfig: &RedisConfig{
+				RedisAddr: "localhost:6379",
+				RedisPwd:  "password",
+				RedisDB:   1,
+			},
 			Workers:    10,
 			BufferSize: 1000,
 		}
@@ -641,7 +661,7 @@ func TestEventBus_Configuration(t *testing.T) {
 // TestEventBus_Shutdown tests graceful shutdown functionality.
 func TestEventBus_Shutdown(t *testing.T) {
 	bus := NewEventBus(&Config{
-		Driver:     "memory",
+		Driver:     DriverInMemory,
 		Workers:    2,
 		BufferSize: 10,
 	})

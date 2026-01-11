@@ -9,7 +9,16 @@ import (
 	"github.com/seyallius/gossip/event/sub"
 )
 
-// -------------------------------------------- Types --------------------------------------------
+// -------------------------------------------- Types, Variables & Constants --------------------------------------------
+
+// DriverType is the type of driver for EventBus.
+type DriverType int
+
+const (
+	DriverInMemory DriverType = iota
+	DriverRedis
+	DriverValkey
+)
 
 // EventBus manages the specific provider.
 type EventBus struct {
@@ -18,22 +27,22 @@ type EventBus struct {
 
 // Config holds configuration for the event bus.
 type Config struct {
-	Driver     string // "memory" or "redis"
-	Workers    int    // Number of worker goroutines
-	BufferSize int    // Size of the event channel buffer
-	RedisAddr  string
-	RedisPwd   string
-	RedisDB    int
+	Driver     DriverType // "memory" or "redis"
+	Workers    int        // Number of worker goroutines
+	BufferSize int        // Size of the event channel buffer
+	*RedisConfig
+	*ValkeyConfig
 }
 
-// DefaultConfig returns sensible default configuration.
-func DefaultConfig() *Config {
-	return &Config{
-		Driver:     "memory",
-		Workers:    10,
-		BufferSize: 1000,
-	}
+// RedisConfig holds configuration for connecting to redis.
+type RedisConfig struct {
+	RedisAddr string
+	RedisPwd  string
+	RedisDB   int
 }
+
+// ValkeyConfig holds configuration for connecting to valkey.
+type ValkeyConfig struct{}
 
 // NewEventBus creates a new event bus with the given configuration.
 func NewEventBus(cfg *Config) *EventBus {
@@ -44,14 +53,29 @@ func NewEventBus(cfg *Config) *EventBus {
 	var provider Provider
 
 	switch cfg.Driver {
-	case "redis":
+	case DriverRedis:
 		provider = NewRedisProvider(cfg.RedisAddr, cfg.RedisPwd, cfg.RedisDB)
+
+	case DriverValkey:
+		panic("valkey is not yet implemented!")
+
 	default:
 		provider = NewInMemoryProvider(cfg.Workers, cfg.BufferSize)
 	}
 
 	return &EventBus{
 		provider: provider,
+	}
+}
+
+// DefaultConfig returns sensible default configuration.
+func DefaultConfig() *Config {
+	return &Config{
+		Driver:       DriverInMemory,
+		Workers:      10,
+		BufferSize:   1000,
+		RedisConfig:  &RedisConfig{},
+		ValkeyConfig: &ValkeyConfig{},
 	}
 }
 
