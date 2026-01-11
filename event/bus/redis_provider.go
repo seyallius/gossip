@@ -24,6 +24,13 @@ type RedisProvider struct {
 	cancel context.CancelFunc
 }
 
+// RedisConfig holds configuration for connecting to redis.
+type RedisConfig struct {
+	RedisAddr string
+	RedisPwd  string
+	RedisDB   int
+}
+
 // NewRedisProvider creates a new Redis-backed provider.
 func NewRedisProvider(addr, password string, db int) *RedisProvider {
 	rdb := redis.NewClient(&redis.Options{

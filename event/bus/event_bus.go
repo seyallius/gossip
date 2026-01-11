@@ -34,16 +34,6 @@ type Config struct {
 	*ValkeyConfig
 }
 
-// RedisConfig holds configuration for connecting to redis.
-type RedisConfig struct {
-	RedisAddr string
-	RedisPwd  string
-	RedisDB   int
-}
-
-// ValkeyConfig holds configuration for connecting to valkey.
-type ValkeyConfig struct{}
-
 // NewEventBus creates a new event bus with the given configuration.
 func NewEventBus(cfg *Config) *EventBus {
 	if cfg == nil {
@@ -55,10 +45,8 @@ func NewEventBus(cfg *Config) *EventBus {
 	switch cfg.Driver {
 	case DriverRedis:
 		provider = NewRedisProvider(cfg.RedisAddr, cfg.RedisPwd, cfg.RedisDB)
-
 	case DriverValkey:
-		panic("valkey is not yet implemented!")
-
+		provider = NewValkeyProvider()
 	default:
 		provider = NewInMemoryProvider(cfg.Workers, cfg.BufferSize)
 	}
