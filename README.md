@@ -8,7 +8,7 @@ Gossip is a lightweight, type-safe event bus library for Go that implements the 
 
 - **🔒 Strongly-typed events** - No string typos with `EventType` constants
 - **⚡ Async by default** - Non-blocking event dispatch with worker pools
-- **🔌 Pluggable providers** - In-memory or Redis Pub/Sub support
+- **🔄 Synchronous option** - When you need immediate processing
 - **🎯 Event filtering** - Conditional processor execution
 - **📦 Batch processing** - Process multiple events efficiently
 - **🔧 Middleware support** - Retry, timeout, logging, recovery
@@ -47,7 +47,7 @@ type UserData struct {
 }
 
 func main() {
-	// Initialize event bus with default in-memory provider
+	// Initialize event bus
 	eventBus := bus.NewEventBus(bus.DefaultConfig())
 	defer eventBus.Shutdown()
 
@@ -55,47 +55,6 @@ func main() {
 	eventBus.Subscribe(UserCreated, func(ctx context.Context, eventToPub *event.Event) error {
 		data := eventToPub.Data.(*UserData)
 		log.Printf("New user: %s", data.Username)
-		return nil
-	})
-
-	// Publish event
-	evnt := event.NewEvent(UserCreated, &UserData{
-		UserID:   "123",
-		Username: "alice",
-	})
-	eventBus.Publish(evnt)
-}
-```
-
-### Using Redis Provider
-
-```go
-package main
-
-import (
-	"context"
-	"log"
-	"github.com/seyallius/gossip/event"
-	"github.com/seyallius/gossip/event/bus"
-)
-
-func main() {
-	// Initialize event bus with Redis provider
-	config := &bus.Config{
-		Driver:     "redis",
-		RedisAddr:  "localhost:6379",
-		RedisPwd:   "", // Set your Redis password
-		RedisDB:    0,
-		Workers:    10,
-		BufferSize: 1000,
-	}
-
-	eventBus := bus.NewEventBus(config)
-	defer eventBus.Shutdown()
-
-	// Use the event bus as normal
-	eventBus.Subscribe(UserCreated, func(ctx context.Context, eventToPub *event.Event) error {
-		// Process event
 		return nil
 	})
 

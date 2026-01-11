@@ -116,15 +116,10 @@ func (s *OrderService) CreateOrder(customerID string, items []string, amount flo
 // -------------------------------------------- Main --------------------------------------------
 
 func main() {
-	// Initialize event bus with default in-memory provider
+	// Initialize event bus
 	config := &bus.Config{
-		Driver:     "memory", // Use "redis" for distributed systems
 		Workers:    15,
 		BufferSize: 2000,
-		// For Redis provider, configure:
-		// RedisAddr:  "localhost:6379",
-		// RedisPwd:   "",
-		// RedisDB:    0,
 	}
 	eventBus := bus.NewEventBus(config)
 	defer eventBus.Shutdown()

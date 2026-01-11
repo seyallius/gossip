@@ -16,285 +16,6 @@ import (
 
 // -------------------------------------------- Test Functions --------------------------------------------
 
-// TestConfig_DefaultConfig tests the default configuration.
-func TestConfig_DefaultConfig(t *testing.T) {
-	config := DefaultConfig()
-
-	if config.Driver != DriverInMemory {
-		t.Errorf("Expected Driver to be 'memory', got %d", config.Driver)
-	}
-
-	if config.Workers != 10 {
-		t.Errorf("Expected Workers to be 10, got %d", config.Workers)
-	}
-
-	if config.BufferSize != 1000 {
-		t.Errorf("Expected BufferSize to be 1000, got %d", config.BufferSize)
-	}
-
-	if config.RedisAddr != "" {
-		t.Errorf("Expected RedisAddr to be empty, got %s", config.RedisAddr)
-	}
-
-	if config.RedisPwd != "" {
-		t.Errorf("Expected RedisPwd to be empty, got %s", config.RedisPwd)
-	}
-
-	if config.RedisDB != 0 {
-		t.Errorf("Expected RedisDB to be 0, got %d", config.RedisDB)
-	}
-}
-
-// TestConfig_CustomConfig tests custom configuration options.
-func TestConfig_CustomConfig(t *testing.T) {
-	t.Run("Custom memory config", func(t *testing.T) {
-		config := &Config{
-			Driver:     DriverInMemory,
-			Workers:    20,
-			BufferSize: 2000,
-			RedisConfig: &RedisConfig{
-				RedisAddr: "localhost:6379",
-				RedisPwd:  "password",
-				RedisDB:   1,
-			},
-		}
-
-		if config.Driver != DriverInMemory {
-			t.Errorf("Expected Driver to be 'memory', got %d", config.Driver)
-		}
-		if config.Workers != 20 {
-			t.Errorf("Expected Workers to be 20, got %d", config.Workers)
-		}
-		if config.BufferSize != 2000 {
-			t.Errorf("Expected BufferSize to be 2000, got %d", config.BufferSize)
-		}
-		if config.RedisAddr != "localhost:6379" {
-			t.Errorf("Expected RedisAddr to be 'localhost:6379', got %s", config.RedisAddr)
-		}
-		if config.RedisPwd != "password" {
-			t.Errorf("Expected RedisPwd to be 'password', got %s", config.RedisPwd)
-		}
-		if config.RedisDB != 1 {
-			t.Errorf("Expected RedisDB to be 1, got %d", config.RedisDB)
-		}
-	})
-
-	t.Run("Custom redis config", func(t *testing.T) {
-		config := &Config{
-			Driver:     DriverRedis,
-			Workers:    5,
-			BufferSize: 500,
-			RedisConfig: &RedisConfig{
-				RedisAddr: "192.168.1.100:6379",
-				RedisPwd:  "mysecret",
-				RedisDB:   2,
-			},
-		}
-
-		if config.Driver != DriverRedis {
-			t.Errorf("Expected Driver to be 'redis', got %d", config.Driver)
-		}
-		if config.Workers != 5 {
-			t.Errorf("Expected Workers to be 5, got %d", config.Workers)
-		}
-		if config.BufferSize != 500 {
-			t.Errorf("Expected BufferSize to be 500, got %d", config.BufferSize)
-		}
-		if config.RedisAddr != "192.168.1.100:6379" {
-			t.Errorf("Expected RedisAddr to be '192.168.1.100:6379', got %s", config.RedisAddr)
-		}
-		if config.RedisPwd != "mysecret" {
-			t.Errorf("Expected RedisPwd to be 'mysecret', got %s", config.RedisPwd)
-		}
-		if config.RedisDB != 2 {
-			t.Errorf("Expected RedisDB to be 2, got %d", config.RedisDB)
-		}
-	})
-}
-
-// TestConfig_NewEventBusWithConfig tests creating event buses with different configurations.
-func TestConfig_NewEventBusWithConfig(t *testing.T) {
-	t.Run("EventBus with memory config", func(t *testing.T) {
-		config := &Config{
-			Driver:     DriverInMemory,
-			Workers:    8,
-			BufferSize: 800,
-		}
-		bus := NewEventBus(config)
-		if bus == nil {
-			t.Fatal("Expected non-nil EventBus")
-		}
-		defer bus.Shutdown()
-	})
-
-	t.Run("EventBus with redis config", func(t *testing.T) {
-		config := &Config{
-			Driver: DriverRedis,
-			RedisConfig: &RedisConfig{
-				RedisAddr: "localhost:6379",
-				RedisPwd:  "",
-				RedisDB:   0,
-			},
-			Workers:    6,
-			BufferSize: 600,
-		}
-		bus := NewEventBus(config)
-		if bus == nil {
-			t.Fatal("Expected non-nil EventBus")
-		}
-		defer bus.Shutdown()
-	})
-
-	t.Run("EventBus with minimal config", func(t *testing.T) {
-		config := &Config{
-			Driver: DriverInMemory,
-		}
-		bus := NewEventBus(config)
-		if bus == nil {
-			t.Fatal("Expected non-nil EventBus")
-		}
-		defer bus.Shutdown()
-	})
-}
-
-// TestConfig_ConfigValidation tests configuration validation (implicit through usage).
-func TestConfig_ConfigValidation(t *testing.T) {
-	t.Run("Config with zero workers", func(t *testing.T) {
-		config := &Config{
-			Driver:     DriverInMemory,
-			Workers:    0,
-			BufferSize: 100,
-		}
-		bus := NewEventBus(config)
-		if bus == nil {
-			t.Fatal("Expected non-nil EventBus even with 0 workers")
-		}
-		defer bus.Shutdown()
-	})
-
-	t.Run("Config with zero buffer size", func(t *testing.T) {
-		config := &Config{
-			Driver:     DriverInMemory,
-			Workers:    5,
-			BufferSize: 0,
-		}
-		bus := NewEventBus(config)
-		if bus == nil {
-			t.Fatal("Expected non-nil EventBus even with 0 buffer size")
-		}
-		defer bus.Shutdown()
-	})
-
-	t.Run("Config with empty redis address", func(t *testing.T) {
-		config := &Config{
-			Driver: DriverRedis,
-			RedisConfig: &RedisConfig{
-				RedisAddr: "",
-				RedisPwd:  "",
-				RedisDB:   0,
-			},
-			Workers:    5,
-			BufferSize: 100,
-		}
-		bus := NewEventBus(config)
-		if bus == nil {
-			t.Fatal("Expected non-nil EventBus")
-		}
-		defer bus.Shutdown()
-	})
-}
-
-// TestConfig_ConfigurationCombinations tests various configuration combinations.
-func TestConfig_ConfigurationCombinations(t *testing.T) {
-	configurations := []Config{
-		{
-			Driver:     DriverInMemory,
-			Workers:    1,
-			BufferSize: 1,
-		},
-		{
-			Driver:     DriverInMemory,
-			Workers:    100,
-			BufferSize: 10000,
-		},
-		{
-			Driver: DriverRedis,
-			RedisConfig: &RedisConfig{
-				RedisAddr: "localhost:6379",
-				RedisPwd:  "password",
-				RedisDB:   15,
-			},
-			Workers:    1,
-			BufferSize: 1,
-		},
-		{
-			Driver: DriverRedis,
-			RedisConfig: &RedisConfig{
-				RedisAddr: "10.0.0.1:6380",
-				RedisPwd:  "complex_password_123",
-				RedisDB:   5,
-			},
-			Workers:    50,
-			BufferSize: 5000,
-		},
-	}
-
-	for i, config := range configurations {
-		t.Run("Config combination "+string(rune(i+'0')), func(t *testing.T) {
-			bus := NewEventBus(&config)
-			if bus == nil {
-				t.Fatalf("Expected non-nil EventBus for config %d", i)
-			}
-			defer bus.Shutdown()
-		})
-	}
-}
-
-// TestConfig_ConfigEquality tests configuration equality (by checking values).
-func TestConfig_ConfigEquality(t *testing.T) {
-	config1 := &Config{
-		Driver:     DriverInMemory,
-		Workers:    10,
-		BufferSize: 1000,
-		RedisConfig: &RedisConfig{
-			RedisAddr: "localhost:6379",
-			RedisPwd:  "password",
-			RedisDB:   1,
-		},
-	}
-
-	config2 := &Config{
-		Driver:     DriverInMemory,
-		Workers:    10,
-		BufferSize: 1000,
-		RedisConfig: &RedisConfig{
-			RedisAddr: "localhost:6379",
-			RedisPwd:  "password",
-			RedisDB:   1,
-		},
-	}
-
-	// Check that all fields match
-	if config1.Driver != config2.Driver {
-		t.Errorf("Expected Driver to match: %d vs %d", config1.Driver, config2.Driver)
-	}
-	if config1.Workers != config2.Workers {
-		t.Errorf("Expected Workers to match: %d vs %d", config1.Workers, config2.Workers)
-	}
-	if config1.BufferSize != config2.BufferSize {
-		t.Errorf("Expected BufferSize to match: %d vs %d", config1.BufferSize, config2.BufferSize)
-	}
-	if config1.RedisAddr != config2.RedisAddr {
-		t.Errorf("Expected RedisAddr to match: %s vs %s", config1.RedisAddr, config2.RedisAddr)
-	}
-	if config1.RedisPwd != config2.RedisPwd {
-		t.Errorf("Expected RedisPwd to match: %s vs %s", config1.RedisPwd, config2.RedisPwd)
-	}
-	if config1.RedisDB != config2.RedisDB {
-		t.Errorf("Expected RedisDB to match: %d vs %d", config1.RedisDB, config2.RedisDB)
-	}
-}
-
 func TestEventBus_PublishSubscribe(t *testing.T) {
 	bus := NewEventBus(DefaultConfig())
 	defer bus.Shutdown()
@@ -369,6 +90,28 @@ func TestEventBus_Unsubscribe(t *testing.T) {
 	}
 }
 
+func TestEventBus_SynchronousPublish(t *testing.T) {
+	bus := NewEventBus(DefaultConfig())
+	defer bus.Shutdown()
+
+	executed := false
+	eventProcessor := func(ctx context.Context, event *event.Event) error {
+		executed = true
+		return nil
+	}
+
+	bus.Subscribe(testdata.AuthEventPasswordChanged, eventProcessor)
+	errors := bus.PublishSync(context.Background(), event.NewEvent(testdata.AuthEventPasswordChanged, nil))
+
+	if len(errors) != 0 {
+		t.Errorf("Expected no errors, got %d", len(errors))
+	}
+
+	if !executed {
+		t.Error("Processor was not executed synchronously")
+	}
+}
+
 func TestEventBus_ConcurrentPublish(t *testing.T) {
 	bus := NewEventBus(DefaultConfig())
 	defer bus.Shutdown()
@@ -416,7 +159,6 @@ func TestEventBus_GracefulShutdown(t *testing.T) {
 		bus.Publish(event.NewEvent(testdata.AuthEventUserCreated, &testdata.UserCreatedData{}))
 	}
 
-	time.Sleep(time.Millisecond) // or else there'll be no time for publishing before shutdown
 	bus.Shutdown()
 
 	if atomic.LoadInt32(&counter) == 0 {
@@ -456,64 +198,9 @@ func TestEventBus_EventMetadata(t *testing.T) {
 	}
 }
 
-// TestEventBus_NewEventBus tests creating a new event bus with different configurations.
-func TestEventBus_NewEventBus(t *testing.T) {
-	t.Run("NewEventBus with nil config uses default", func(t *testing.T) {
-		bus := NewEventBus(nil)
-		defer bus.Shutdown()
-
-		if bus == nil {
-			t.Fatal("Expected non-nil EventBus")
-		}
-	})
-
-	t.Run("NewEventBus with memory driver", func(t *testing.T) {
-		config := &Config{
-			Driver:     DriverInMemory,
-			Workers:    5,
-			BufferSize: 100,
-		}
-		bus := NewEventBus(config)
-		defer bus.Shutdown()
-
-		if bus == nil {
-			t.Fatal("Expected non-nil EventBus")
-		}
-	})
-
-	t.Run("NewEventBus with redis driver", func(t *testing.T) {
-		config := &Config{
-			Driver: DriverRedis,
-			RedisConfig: &RedisConfig{
-				RedisAddr: "localhost:6379",
-				RedisPwd:  "",
-				RedisDB:   0,
-			},
-			Workers:    5,
-			BufferSize: 100,
-		}
-		bus := NewEventBus(config)
-		defer bus.Shutdown()
-
-		if bus == nil {
-			t.Fatal("Expected non-nil EventBus")
-		}
-	})
-
-	t.Run("NewEventBus with default config", func(t *testing.T) {
-		bus := NewEventBus(DefaultConfig())
-		defer bus.Shutdown()
-
-		if bus == nil {
-			t.Fatal("Expected non-nil EventBus")
-		}
-	})
-}
-
 // TestEventBus_PublishSubscribeExtended tests additional publish/subscribe functionality.
 func TestEventBus_PublishSubscribeExtended(t *testing.T) {
 	bus := NewEventBus(&Config{
-		Driver:     DriverInMemory,
 		Workers:    5,
 		BufferSize: 100,
 	})
@@ -546,7 +233,6 @@ func TestEventBus_PublishSubscribeExtended(t *testing.T) {
 // TestEventBus_MultipleSubscribersExtended tests multiple subscribers with different configurations.
 func TestEventBus_MultipleSubscribersExtended(t *testing.T) {
 	bus := NewEventBus(&Config{
-		Driver:     DriverInMemory,
 		Workers:    8,
 		BufferSize: 200,
 	})
@@ -587,7 +273,6 @@ func TestEventBus_MultipleSubscribersExtended(t *testing.T) {
 // TestEventBus_UnsubscribeExtended tests unsubscribing with different scenarios.
 func TestEventBus_UnsubscribeExtended(t *testing.T) {
 	bus := NewEventBus(&Config{
-		Driver:     DriverInMemory,
 		Workers:    3,
 		BufferSize: 50,
 	})
@@ -626,28 +311,8 @@ func TestEventBus_UnsubscribeExtended(t *testing.T) {
 func TestEventBus_Configuration(t *testing.T) {
 	t.Run("Config with custom workers and buffer", func(t *testing.T) {
 		config := &Config{
-			Driver:     DriverInMemory,
 			Workers:    20,
 			BufferSize: 2000,
-		}
-		bus := NewEventBus(config)
-		defer bus.Shutdown()
-
-		if bus == nil {
-			t.Fatal("Expected non-nil EventBus")
-		}
-	})
-
-	t.Run("Config with redis settings", func(t *testing.T) {
-		config := &Config{
-			Driver: DriverRedis,
-			RedisConfig: &RedisConfig{
-				RedisAddr: "localhost:6379",
-				RedisPwd:  "password",
-				RedisDB:   1,
-			},
-			Workers:    10,
-			BufferSize: 1000,
 		}
 		bus := NewEventBus(config)
 		defer bus.Shutdown()
@@ -661,7 +326,6 @@ func TestEventBus_Configuration(t *testing.T) {
 // TestEventBus_Shutdown tests graceful shutdown functionality.
 func TestEventBus_Shutdown(t *testing.T) {
 	bus := NewEventBus(&Config{
-		Driver:     DriverInMemory,
 		Workers:    2,
 		BufferSize: 10,
 	})

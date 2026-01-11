@@ -200,17 +200,8 @@ func WithErrorHandling() middleware.Middleware {
 // -------------------------------------------- Main Function --------------------------------------------
 
 func main() {
-	// Initialize event bus with default in-memory provider
-	config := &bus.Config{
-		Driver:     "memory", // Use "redis" for distributed systems
-		Workers:    10,
-		BufferSize: 1000,
-		// For Redis provider, configure:
-		// RedisAddr:  "localhost:6379",
-		// RedisPwd:   "",
-		// RedisDB:    0,
-	}
-	eventBus := bus.NewEventBus(config)
+	// Initialize event bus
+	eventBus := bus.NewEventBus(bus.DefaultConfig())
 	defer eventBus.Shutdown()
 
 	// Subscribe processors with error handling middleware

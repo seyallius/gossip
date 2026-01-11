@@ -82,17 +82,16 @@ func (s *EmailService) registerProcessors() {
 
 // handleUserCreated sends welcome email to new users.
 func (s *EmailService) handleUserCreated(ctx context.Context, event *gossip.Event) error {
-	//data := event.Data.(*UserCreatedEvent) // since using redis, it's a map[string]any
-	data := event.Data.(map[string]any)
+	data := event.Data.(*UserCreatedEvent)
 
-	log.Printf("[EmailService] Sending welcome email to %s", data["Email"])
+	log.Printf("[EmailService] Sending welcome email to %s", data.Email)
 
 	// Send email logic...
 	time.Sleep(50 * time.Millisecond)
 
 	// Publish email sent event
 	s.bus.Publish(gossip.NewEvent(EmailServiceSent, map[string]string{
-		"to":      data["Email"].(string),
+		"to":      data.Email,
 		"subject": "Welcome!",
 	}))
 
@@ -120,10 +119,9 @@ func (s *NotificationService) registerProcessors() {
 
 // handleUserCreated sends push notification to new users.
 func (s *NotificationService) handleUserCreated(ctx context.Context, event *gossip.Event) error {
-	//data := event.Data.(*UserCreatedEvent) // since using redis, it's a map[string]any
-	data := event.Data.(map[string]any)
+	data := event.Data.(*UserCreatedEvent)
 
-	log.Printf("[NotificationService] Sending push notification to user %s", data["UserId"])
+	log.Printf("[NotificationService] Sending push notification to user %s", data.UserID)
 
 	// Send notification logic...
 
@@ -163,14 +161,10 @@ func (s *AnalyticsService) trackEvent(ctx context.Context, event *gossip.Event) 
 // -------------------------------------------- Main --------------------------------------------
 
 func main() {
-	// Shared event bus across services - using Redis provider for true microservices
+	// Shared event bus across services
 	config := &bus.Config{
-		Driver:     "redis", // Use Redis for distributed systems
 		Workers:    10,
 		BufferSize: 1000,
-		RedisAddr:  "localhost:6379", // Configure for your Redis instance
-		RedisPwd:   "",
-		RedisDB:    0,
 	}
 	eventBus := bus.NewEventBus(config)
 	defer eventBus.Shutdown()
