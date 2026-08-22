@@ -698,6 +698,32 @@ func IsNoData(err error) bool
 
 Checks if an error indicates no data.
 
+## Safe Type Casting (utils package)
+
+The `utils` package provides utilities for safely casting event data with configurable nil-checking strategies.
+
+### CastEventData
+
+```go
+func CastEventData[T any](e *event.Event, opts ...CastOption) (T, error)
+```
+
+Safely casts the event's `Data` field to type `T`. Returns an error if the type assertion fails or if the data is nil.
+
+**Options:**
+
+- `WithReflectNilCheck()`: Uses reflection to check for typed nils (safest, but slower).
+- `WithNoNilCheck()`: Disables typed nil checking entirely (fastest, default).
+- `WithCustomNilCheck(checker NilChecker)`: Allows providing a custom, high-performance nil checker.
+
+### NilChecker
+
+```go
+type NilChecker func (v any) bool
+```
+
+A function that returns true if the given value is considered nil. Used to detect "typed nils" without reflection.
+
 ## Performance Recommendations
 
 1. **Use Memory Provider** for single-application, high-throughput scenarios

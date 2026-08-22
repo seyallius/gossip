@@ -265,6 +265,21 @@ processor := batch.NewBatchProcessor(UserCreated, batchConfig, batchProcessor)
 eventBus.Subscribe(UserCreated, processor.AsEventProcessor())
 ```
 
+### 5. Safe Type Casting
+Safely cast event data with configurable nil-checking strategies to avoid the infamous "typed nil" panic trap:
+```go
+import "github.com/seyallius/gossip/event/utils"
+
+// 🚀 Fast path (default): Only checks for untyped nils (Zero overhead)
+data, err := utils.CastEventData[*UserData](event)
+
+// 🛡️ Safe path: Uses reflection to catch typed nils
+data, err := utils.CastEventData[*UserData](event, utils.WithReflectNilCheck())
+
+// ⚡ Hot path: Zero-allocation custom checker (Best for high-throughput)
+data, err := utils.CastEventData[*UserData](event, utils.WithCustomNilCheck(MyFastChecker))
+```
+
 ## 🏗️ Core Concepts
 
 ### Event Types

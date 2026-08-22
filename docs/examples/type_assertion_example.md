@@ -51,14 +51,27 @@ type BadData struct {
 ### Processor with Type Assertion Error Handling
 
 ```go
+package main
+
+import "github.com/seyallius/gossip/event/utils"
+
+// FastUserDataNilChecker is a zero-allocation, reflection-free nil checker for *UserData.
+func FastUserDataNilChecker(v any) bool {
+	u, ok := v.(*UserData)
+	if !ok {
+		return false
+	}
+	return u == nil
+}
+
 // userProcessor demonstrates proper type assertion with error handling
 func userProcessor(ctx context.Context, event *gossip.Event) error {
-	// The common scenario: type assertion with error handling
-	data, ok := event.Data.(*UserData)
-	if !ok {
-		// This is the exact scenario you mentioned - instead of just panicking,
-		// we return a specific error type that can be handled conditionally
-		return goserr.NewTypeAssertionError("*UserData", event.Data, "expected *UserData but got different type")
+	// Safely cast data using the generic cast utility.
+	// We use a custom fast checker to avoid reflection overhead in hot paths.
+	data, err := utils.CastEventData[*UserData](event, utils.WithCustomNilCheck(FastUserDataNilChecker))
+	if err != nil {
+		// Automatically returns goserr.ErrNilData or goserr.TypeAssertionError
+		return err
 	}
 
 	// Process the correctly typed data

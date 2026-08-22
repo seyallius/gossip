@@ -1,3 +1,6 @@
+// Copyright (c) 2025 SeyedAli
+// Licensed under the MIT License. See LICENSE file in the project root for details.
+
 // Package utils. cast_test.go provides comprehensive tests for the casting
 // utilities and nil-checking strategies.
 package utils

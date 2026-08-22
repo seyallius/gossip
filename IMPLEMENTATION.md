@@ -1456,6 +1456,15 @@ If you call processors directly in `Publish()`, the publisher waits for them. Wi
 
 If one processor fails, others should still run. Panicking would crash the entire bus. Logging lets you monitor failures without bringing down the system.
 
+### 6. Why Functional Options for Nil Checking in `CastEventData`?
+**Answer:** Performance vs. Safety trade-offs.
+In Go, an `interface{}` holding a typed nil (e.g., `var u *User = nil`) is NOT equal to `nil`. Checking for this "typed nil" requires reflection, which is slow in hot paths.
+Instead of forcing reflection on everyone, or ignoring the problem, we used the **Functional Options Pattern**:
+- **Default (Fast Path)**: Only checks for untyped `nil`. Zero overhead.
+- **Opt-in (Safe Path)**: `WithReflectNilCheck()` for non-critical paths.
+- **Opt-in (Hot Path)**: `WithCustomNilCheck()` allows users to provide a zero-allocation type assertion checker for their specific types.
+  This perfectly aligns with the Open/Closed principle and gives developers exact control over their performance profiles.
+
 ---
 
 ## How to Extend This Library
