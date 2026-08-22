@@ -108,6 +108,13 @@ func (eb *EventBus) SubscribeMultiple(eventTypes []EventType, processor EventPro
 
 Registers a processor for multiple event types and returns subscription IDs.
 
+Parameters:
+
+1. `eventTypes`: Slice of event types to subscribe to
+2. `processor`: The processor function that will handle all these event types
+
+Returns: A slice of subscription IDs (one per event type)
+
 **Example:**
 ```go
 eventTypes := []gossip.EventType{UserCreated, UserUpdated, UserDeleted}
@@ -144,6 +151,10 @@ func (eb *EventBus) UnsubscribeMultiple(subscriptionIDs []string)
 ```
 
 Removes multiple subscriptions by their IDs.
+
+Parameters:
+
+- `subscriptionIDs`: Slice of subscription IDs to remove
 
 **Example:**
 ```go

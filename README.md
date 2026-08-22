@@ -11,6 +11,7 @@ Gossip is a lightweight, type-safe event bus library for Go that implements the 
 - **🔄 Synchronous option** - When you need immediate processing
 - **🎯 Event filtering** - Conditional processor execution
 - **📦 Batch processing** - Process multiple events efficiently
+- **🔄 Bulk subscription** - Subscribe to multiple event types with a single processor
 - **🔧 Middleware support** - Retry, timeout, logging, recovery
 - **🎚️ Priority queues** - Handle critical events first
 - **🛡️ Thread-safe** - Concurrent publish/subscribe operations
@@ -306,6 +307,39 @@ func myProcessor(ctx context.Context, event *event.Event) error {
     // Process event
     return nil
 }
+```
+
+### Bulk Subscription
+
+Subscribe to multiple event types with a single processor:
+
+```go
+// Define multiple event types
+const (
+    UserCreated  event.EventType = "user.created"
+    UserUpdated  event.EventType = "user.updated"
+    UserDeleted  event.EventType = "user.deleted"
+)
+
+// Subscribe to all user events with one processor
+eventTypes := []event.EventType{UserCreated, UserUpdated, UserDeleted}
+subscriptionIDs := eventBus.SubscribeMultiple(eventTypes, func(ctx context.Context, e *event.Event) error {
+    switch e.Type {
+    case UserCreated:
+        data := e.Data.(*UserData)
+        log.Printf("New user created: %s", data.Username)
+    case UserUpdated:
+        data := e.Data.(*UserData)
+        log.Printf("User updated: %s", data.Username)
+    case UserDeleted:
+        data := e.Data.(*UserData)
+        log.Printf("User deleted: %s", data.Username)
+    }
+    return nil
+})
+
+// Clean up all subscriptions at once
+defer eventBus.UnsubscribeMultiple(subscriptionIDs)
 ```
 
 ## ⚡ Performance

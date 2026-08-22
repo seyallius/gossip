@@ -117,6 +117,71 @@ func DoSomething() {
 }
 ```
 
+### Bulk Subscription
+
+Subscribe to multiple event types with a single processor:
+
+```go
+package main
+
+import (
+	"context"
+	"log"
+	"github.com/seyallius/gossip/v2/event"
+	"github.com/seyallius/gossip/v2/event/bus"
+)
+
+const (
+	UserCreated event.EventType = "user.created"
+	UserUpdated event.EventType = "user.updated"
+	UserDeleted event.EventType = "user.deleted"
+)
+
+type UserData struct {
+	UserID   string
+	Username string
+	Email    string
+}
+
+func main() {
+	eventBus := bus.NewEventBus(bus.DefaultConfig())
+	defer eventBus.Shutdown()
+
+	// Subscribe to multiple event types with one processor
+	eventTypes := []event.EventType{UserCreated, UserUpdated, UserDeleted}
+	subscriptionIDs := eventBus.SubscribeMultiple(eventTypes, func(ctx context.Context, e *event.Event) error {
+		switch e.Type {
+		case UserCreated:
+			data := e.Data.(*UserData)
+			log.Printf("New user: %s", data.Username)
+		case UserUpdated:
+			data := e.Data.(*UserData)
+			log.Printf("User updated: %s", data.Username)
+		case UserDeleted:
+			data := e.Data.(*UserData)
+			log.Printf("User deleted: %s", data.Username)
+		}
+		return nil
+	})
+
+	// Clean up all subscriptions
+	defer eventBus.UnsubscribeMultiple(subscriptionIDs)
+
+	// Publish events
+	eventBus.Publish(event.NewEvent(UserCreated, &UserData{
+		UserID:   "123",
+		Username: "alice",
+		Email:    "alice@example.com",
+	}))
+
+	eventBus.Publish(event.NewEvent(UserUpdated, &UserData{
+		UserID:   "123",
+		Username: "alice_updated",
+		Email:    "alice@example.com",
+	}))
+}
+```
+
 ### Using Redis Provider
 
 For distributed systems, you can use the Redis provider:

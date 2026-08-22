@@ -15,7 +15,7 @@ import (
 	"github.com/seyallius/gossip/v2/event/sub"
 )
 
-// -------------------------------------------- Types, Variables & Constants --------------------------------------------
+// ------------------------------------ Types, Variables & Constants -------------------------------- //
 
 // DriverType is the type of driver for EventBus.
 type DriverType int
@@ -44,6 +44,8 @@ type Config struct {
 	Workers    int // Number of worker goroutines
 	BufferSize int // Size of the event channel buffer
 }
+
+// ------------------------------------------ Constructor(s) ---------------------------------------- //
 
 // NewEventBus creates a new event bus with the given configuration.
 // It also starts the configured number of worker goroutines and creates
@@ -94,6 +96,18 @@ func (eb *EventBus) Subscribe(eventType event.EventType, eventProcessor sub.Even
 	return subscription.Id
 }
 
+// SubscribeMultiple registers a processor for multiple event types and returns subscription IDs.
+// This is useful when the same logic applies to multiple event types (e.g., audit logging,
+// metrics collection, or generic event handling).
+func (eb *EventBus) SubscribeMultiple(eventTypes []event.EventType, processor sub.EventProcessor) []string {
+	subscriptionIDs := make([]string, 0, len(eventTypes))
+	for _, eventType := range eventTypes {
+		id := eb.Subscribe(eventType, processor)
+		subscriptionIDs = append(subscriptionIDs, id)
+	}
+	return subscriptionIDs
+}
+
 // Unsubscribe removes a subscription from EventBus.
 func (eb *EventBus) Unsubscribe(subscriptionId string) bool {
 	eb.mu.Lock()
@@ -111,6 +125,13 @@ func (eb *EventBus) Unsubscribe(subscriptionId string) bool {
 	return false
 }
 
+// UnsubscribeMultiple removes multiple subscriptions by their IDs.
+func (eb *EventBus) UnsubscribeMultiple(subscriptionIDs []string) {
+	for _, id := range subscriptionIDs {
+		eb.Unsubscribe(id)
+	}
+}
+
 // PublishSync sends an event to all registered handlers synchronously.
 func (eb *EventBus) PublishSync(ctx context.Context, eventToPub *event.Event) []error {
 	return eb.dispatch(ctx, eventToPub)
@@ -122,13 +143,6 @@ func (eb *EventBus) Publish(eventToPub *event.Event) {
 	case eb.eventChan <- eventToPub: // publish event by putting it on event channel
 	case <-eb.ctx.Done(): // publish canceled - ignore and return
 	default: // event buffer full - drop event and do nothing todo: log?
-	}
-}
-
-// UnsubscribeMultiple removes multiple subscriptions by their IDs.
-func (eb *EventBus) UnsubscribeMultiple(subscriptionIDs []string) {
-	for _, id := range subscriptionIDs {
-		eb.Unsubscribe(id)
 	}
 }
 
