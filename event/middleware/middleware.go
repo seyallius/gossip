@@ -14,12 +14,12 @@ import (
 	"github.com/seyallius/gossip/event/sub"
 )
 
-// -------------------------------------------- Types --------------------------------------------
+// ----------------------------------------------- Types -------------------------------------------- //
 
 // Middleware wraps a sub.EventProcessor with additional behavior.
 type Middleware func(sub.EventProcessor) sub.EventProcessor
 
-// -------------------------------------------- Public Functions --------------------------------------------
+// -------------------------------------------- Public API ------------------------------------------ //
 
 // WithRetry retries failed event processors with exponential backoff.
 // It executes initial + retries.

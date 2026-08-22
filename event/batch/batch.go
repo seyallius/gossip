@@ -16,7 +16,7 @@ import (
 	"github.com/seyallius/gossip/event/sub"
 )
 
-// -------------------------------------------- Types --------------------------------------------
+// ----------------------------------------------- Types -------------------------------------------- //
 
 // BatchProcessor is a function that processes multiple events at once.
 // This is more efficient than processing events individually when:
@@ -143,7 +143,7 @@ func NewBatchProcessor(eventType event.EventType, config BatchConfig, processor 
 	return bp
 }
 
-// -------------------------------------------- Public Functions --------------------------------------------
+// -------------------------------------------- Public API ------------------------------------------ //
 
 // Add adds an event to the batch buffer.
 //
@@ -225,7 +225,7 @@ func (bp *Batch) AsEventProcessor() sub.EventProcessor {
 	}
 }
 
-// -------------------------------------------- Private Helper Functions --------------------------------------------
+// ----------------------------------------- Internal Helpers --------------------------------------- //
 
 // start begins the periodic flush goroutine.
 //

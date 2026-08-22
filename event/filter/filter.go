@@ -11,7 +11,7 @@ import (
 	"github.com/seyallius/gossip/event/sub"
 )
 
-// -------------------------------------------- Types --------------------------------------------
+// ----------------------------------------------- Types -------------------------------------------- //
 
 // Filter determines if an event should be processed by a processor.
 type Filter func(*event.Event) bool
@@ -32,7 +32,7 @@ func NewFilteredProcessor(filter Filter, processor sub.EventProcessor) sub.Event
 	}
 }
 
-// -------------------------------------------- Public Functions --------------------------------------------
+// -------------------------------------------- Public API ------------------------------------------ //
 
 // FilterByMetadata creates a filter that checks for specific metadata key-value pairs.
 func FilterByMetadata(key string, value any) Filter {

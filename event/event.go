@@ -6,7 +6,7 @@ package event
 
 import "time"
 
-// -------------------------------------------- Types --------------------------------------------
+// ----------------------------------------------- Types -------------------------------------------- //
 
 // EventType represents a strongly-typed event identifier to prevent typos and ensure consistency.
 type EventType string
@@ -29,7 +29,7 @@ func NewEvent(eventType EventType, data any) *Event {
 	}
 }
 
-// -------------------------------------------- Public Functions --------------------------------------------
+// -------------------------------------------- Public API ------------------------------------------ //
 
 // WithMetadata adds metadata to the event and returns the event for chaining.
 func (e *Event) WithMetadata(key string, value any) *Event {

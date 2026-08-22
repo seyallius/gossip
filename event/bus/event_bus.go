@@ -77,7 +77,7 @@ func DefaultConfig() *Config {
 	}
 }
 
-// -------------------------------------------- Public Functions --------------------------------------------
+// -------------------------------------------- Public API ------------------------------------------ //
 
 // Subscribe registers a sub.EventProcessor for a specific event type and returns a subscription ID.
 func (eb *EventBus) Subscribe(eventType event.EventType, eventProcessor sub.EventProcessor) string {
