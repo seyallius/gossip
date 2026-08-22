@@ -123,7 +123,7 @@ func NewRetryableError(err error, message string) *RetryableError {
 }
 
 // NewRetryableErrorf creates a new RetryableError with formatted message.
-func NewRetryableErrorf(format string, args ...interface{}) *RetryableError {
+func NewRetryableErrorf(format string, args ...any) *RetryableError {
 	return &RetryableError{
 		Err:     fmt.Errorf(format, args...),
 		Message: fmt.Sprintf(format, args...),
@@ -140,7 +140,7 @@ func NewValidationError(field string, err error, message string) *ValidationErro
 }
 
 // NewValidationErrorf creates a new ValidationError with formatted message.
-func NewValidationErrorf(field, format string, args ...interface{}) *ValidationError {
+func NewValidationErrorf(field, format string, args ...any) *ValidationError {
 	return &ValidationError{
 		Err:     fmt.Errorf(format, args...),
 		Field:   field,
@@ -157,7 +157,7 @@ func NewProcessingError(err error, message string) *ProcessingError {
 }
 
 // NewProcessingErrorf creates a new ProcessingError with formatted message.
-func NewProcessingErrorf(format string, args ...interface{}) *ProcessingError {
+func NewProcessingErrorf(format string, args ...any) *ProcessingError {
 	return &ProcessingError{
 		Err:     fmt.Errorf(format, args...),
 		Message: fmt.Sprintf(format, args...),
@@ -174,7 +174,7 @@ func NewTimeoutError(timeout string, err error, message string) *TimeoutError {
 }
 
 // NewTimeoutErrorf creates a new TimeoutError with formatted message.
-func NewTimeoutErrorf(timeout, format string, args ...interface{}) *TimeoutError {
+func NewTimeoutErrorf(timeout, format string, args ...any) *TimeoutError {
 	return &TimeoutError{
 		Err:     fmt.Errorf(format, args...),
 		Message: fmt.Sprintf(format, args...),
@@ -191,7 +191,7 @@ func NewFatalError(err error, message string) *FatalError {
 }
 
 // NewFatalErrorf creates a new FatalError with formatted message.
-func NewFatalErrorf(format string, args ...interface{}) *FatalError {
+func NewFatalErrorf(format string, args ...any) *FatalError {
 	return &FatalError{
 		Err:     fmt.Errorf(format, args...),
 		Message: fmt.Sprintf(format, args...),
@@ -272,7 +272,7 @@ func AsFatalError(err error) (*FatalError, bool) {
 type TypeAssertionError struct {
 	ExpectedType string
 	ActualType   string
-	Value        interface{}
+	Value        any
 	Message      string
 }
 
@@ -356,7 +356,7 @@ func (e *UnsupportedEventTypeError) Unwrap() error {
 // -------------------------------------------- Error Creation Functions for Common Errors --------------------------------------------
 
 // NewTypeAssertionError creates a new TypeAssertionError.
-func NewTypeAssertionError(expectedType string, actualValue interface{}, message string) *TypeAssertionError {
+func NewTypeAssertionError(expectedType string, actualValue any, message string) *TypeAssertionError {
 	return &TypeAssertionError{
 		ExpectedType: expectedType,
 		ActualType:   fmt.Sprintf("%T", actualValue),
@@ -389,7 +389,7 @@ func NewInvalidEventError(eventID, field, reason string) *InvalidEventError {
 }
 
 // NewInvalidEventErrorf creates a new InvalidEventError with formatted message.
-func NewInvalidEventErrorf(format string, args ...interface{}) *InvalidEventError {
+func NewInvalidEventErrorf(format string, args ...any) *InvalidEventError {
 	return &InvalidEventError{
 		Message: fmt.Sprintf(format, args...),
 	}
@@ -404,7 +404,7 @@ func NewUnsupportedEventTypeError(eventType string, supported []string) *Unsuppo
 }
 
 // NewUnsupportedEventTypeErrorf creates a new UnsupportedEventTypeError with formatted message.
-func NewUnsupportedEventTypeErrorf(format string, args ...interface{}) *UnsupportedEventTypeError {
+func NewUnsupportedEventTypeErrorf(format string, args ...any) *UnsupportedEventTypeError {
 	return &UnsupportedEventTypeError{
 		Message: fmt.Sprintf(format, args...),
 	}

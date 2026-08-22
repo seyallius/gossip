@@ -56,25 +56,25 @@ func BenchmarkFilterByMetadata_TableDriven(b *testing.B) {
 		name     string
 		key      string
 		value    string
-		metadata map[string]interface{}
+		metadata map[string]any
 	}{
 		{
 			"Match",
 			"priority",
 			"high",
-			map[string]interface{}{"priority": "high"},
+			map[string]any{"priority": "high"},
 		},
 		{
 			"NoMatch",
 			"priority",
 			"high",
-			map[string]interface{}{"priority": "low"},
+			map[string]any{"priority": "low"},
 		},
 		{
 			"MissingKey",
 			"priority",
 			"high",
-			map[string]interface{}{"status": "active"},
+			map[string]any{"status": "active"},
 		},
 	}
 
@@ -168,17 +168,17 @@ func BenchmarkFilterCombinations(b *testing.B) {
 func BenchmarkFilterWithDifferentMetadata(b *testing.B) {
 	metadataSets := []struct {
 		name     string
-		metadata map[string]interface{}
+		metadata map[string]any
 	}{
 		{
 			"Small",
-			map[string]interface{}{
+			map[string]any{
 				"priority": "high",
 			},
 		},
 		{
 			"Medium",
-			map[string]interface{}{
+			map[string]any{
 				"priority": "high",
 				"source":   "api",
 				"status":   "active",
@@ -187,7 +187,7 @@ func BenchmarkFilterWithDifferentMetadata(b *testing.B) {
 		},
 		{
 			"Large",
-			map[string]interface{}{
+			map[string]any{
 				"priority":  "high",
 				"source":    "api",
 				"status":    "active",

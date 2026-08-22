@@ -92,7 +92,7 @@ func BenchmarkEventBus_PublishSync_HeavyPayload(b *testing.B) {
 	type HeavyData struct {
 		ID      string
 		Data    [1024]byte // 1KB payload
-		Extra   map[string]interface{}
+		Extra   map[string]any
 		Numbers []int64
 	}
 
@@ -107,7 +107,7 @@ func BenchmarkEventBus_PublishSync_HeavyPayload(b *testing.B) {
 	data := HeavyData{
 		ID:      "test",
 		Data:    [1024]byte{},
-		Extra:   make(map[string]interface{}),
+		Extra:   make(map[string]any),
 		Numbers: make([]int64, 100),
 	}
 
@@ -136,11 +136,11 @@ func BenchmarkEventBus_MemoryAllocations_Publish(b *testing.B) {
 	// Test different payload sizes
 	tests := []struct {
 		name string
-		data interface{}
+		data any
 	}{
 		{"nil", nil},
 		{"small", "tiny"},
-		{"medium", map[string]interface{}{"id": "123", "name": "test", "value": 42}},
+		{"medium", map[string]any{"id": "123", "name": "test", "value": 42}},
 		{"large", make([]byte, 4096)},
 	}
 

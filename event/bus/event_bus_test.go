@@ -172,7 +172,7 @@ func TestEventBus_EventMetadata(t *testing.T) {
 	defer bus.Shutdown()
 
 	var mu sync.Mutex
-	receivedMetadata := make(map[string]interface{})
+	receivedMetadata := make(map[string]any)
 	eventProcessor := func(ctx context.Context, event *event.Event) error {
 		mu.Lock()
 		defer mu.Unlock()
