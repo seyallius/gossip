@@ -10,11 +10,11 @@ import (
 	"log"
 	"time"
 
-	gossip "github.com/seyallius/gossip/event"
-	"github.com/seyallius/gossip/event/batch"
-	"github.com/seyallius/gossip/event/bus"
-	"github.com/seyallius/gossip/event/filter"
-	"github.com/seyallius/gossip/event/middleware"
+	gossip "github.com/seyallius/gossip/v2/event"
+	"github.com/seyallius/gossip/v2/event/batch"
+	"github.com/seyallius/gossip/v2/event/bus"
+	"github.com/seyallius/gossip/v2/event/filter"
+	"github.com/seyallius/gossip/v2/event/middleware"
 )
 
 // E-commerce event types.

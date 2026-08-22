@@ -7,7 +7,7 @@ This guide will help you get up and running with Gossip, from installation to yo
 To install Gossip, use `go get`:
 
 ```bash
-go get github.com/seyallius/gossip
+go get github.com/seyallius/gossip/v2
 ```
 
 ## 🚀 Quick Start
@@ -22,8 +22,8 @@ package main
 import (
 	"context"
 	"log"
-	"github.com/seyallius/gossip/event"
-	"github.com/seyallius/gossip/event/bus"
+	"github.com/seyallius/gossip/v2/event"
+	"github.com/seyallius/gossip/v2/event/bus"
 )
 
 // Define event types
@@ -96,8 +96,8 @@ func main() {
 package main
 
 import (
-	"github.com/seyallius/gossip/event"
-	"github.com/seyallius/gossip/event/bus"
+	"github.com/seyallius/gossip/v2/event"
+	"github.com/seyallius/gossip/v2/event/bus"
 )
 
 func main() {
@@ -127,8 +127,8 @@ package main
 import (
 	"context"
 	"log"
-	"github.com/seyallius/gossip/event"
-	"github.com/seyallius/gossip/event/bus"
+	"github.com/seyallius/gossip/v2/event"
+	"github.com/seyallius/gossip/v2/event/bus"
 )
 
 func main() {
@@ -308,7 +308,7 @@ errors := eventBus.PublishSync(ctx, event)
 Conditionally execute processors based on event properties:
 
 ```go
-import "github.com/seyallius/gossip/event/filter"
+import "github.com/seyallius/gossip/v2/event/filter"
 
 // Filter by metadata
 highPriorityFilter := filter.FilterByMetadata("priority", "high")
@@ -332,7 +332,7 @@ eventBus.Subscribe(UserCreated, filteredProcessor)
 Chain behaviors around processors:
 
 ```go
-import "github.com/seyallius/gossip/event/middleware"
+import "github.com/seyallius/gossip/v2/event/middleware"
 
 // Chain multiple middleware
 processor := middleware.Chain(
@@ -350,7 +350,7 @@ eventBus.Subscribe(UserCreated, processor)
 Process events in groups for efficiency:
 
 ```go
-import "github.com/seyallius/gossip/event/batch"
+import "github.com/seyallius/gossip/v2/event/batch"
 
 // Batch processor function
 batchProcessor := func(ctx context.Context, events []*event.Event) error {

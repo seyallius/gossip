@@ -4,7 +4,7 @@
 // Package testdata. helper provides test helpers.
 package testdata
 
-import "github.com/seyallius/gossip/event"
+import "github.com/seyallius/gossip/v2/event"
 
 // -------------------------------------------- Event Data Structs --------------------------------------------
 

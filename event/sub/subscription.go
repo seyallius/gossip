@@ -8,7 +8,7 @@ package sub
 import (
 	"context"
 
-	"github.com/seyallius/gossip/event"
+	"github.com/seyallius/gossip/v2/event"
 )
 
 // EventProcessor is a function that processes events.

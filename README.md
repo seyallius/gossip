@@ -19,7 +19,7 @@ Gossip is a lightweight, type-safe event bus library for Go that implements the 
 ## 📦 Installation
 
 ```bash
-go get github.com/seyallius/gossip
+go get github.com/seyallius/gossip/v2
 ```
 
 ## 🚀 Quick Start
@@ -32,8 +32,8 @@ package main
 import (
 	"context"
 	"log"
-	"github.com/seyallius/gossip/event"
-	"github.com/seyallius/gossip/event/bus"
+	"github.com/seyallius/gossip/v2/event"
+	"github.com/seyallius/gossip/v2/event/bus"
 )
 
 // Define event types
@@ -72,7 +72,7 @@ func main() {
 Gossip provides standard error types for conditional logic and error handling, including both constructor functions and pre-defined constants similar to `io.EOF` or `redis.Nil`:
 
 ```go
-import "github.com/seyallius/gossip/event/errors"
+import "github.com/seyallius/gossip/v2/event/errors"
 
 // In your event processor - using constructor functions for custom messages
 func myProcessor(ctx context.Context, event *event.Event) error {
@@ -199,7 +199,7 @@ errors := eventBus.PublishSync(ctx, event)
 Conditionally execute processors based on event properties:
 
 ```go
-import "github.com/seyallius/gossip/event/filter"
+import "github.com/seyallius/gossip/v2/event/filter"
 
 // Filter by metadata
 highPriorityFilter := filter.FilterByMetadata("priority", "high")
@@ -223,7 +223,7 @@ eventBus.Subscribe(UserCreated, filteredProcessor)
 Chain behaviors around processors:
 
 ```go
-import "github.com/seyallius/gossip/event/middleware"
+import "github.com/seyallius/gossip/v2/event/middleware"
 
 // Chain multiple middleware
 processor := middleware.Chain(
@@ -241,7 +241,7 @@ eventBus.Subscribe(UserCreated, processor)
 Process events in groups for efficiency:
 
 ```go
-import "github.com/seyallius/gossip/event/batch"
+import "github.com/seyallius/gossip/v2/event/batch"
 
 // Batch processor function
 batchProcessor := func(ctx context.Context, events []*event.Event) error {
@@ -268,7 +268,7 @@ eventBus.Subscribe(UserCreated, processor.AsEventProcessor())
 ### 5. Safe Type Casting
 Safely cast event data with configurable nil-checking strategies to avoid the infamous "typed nil" panic trap:
 ```go
-import "github.com/seyallius/gossip/event/utils"
+import "github.com/seyallius/gossip/v2/event/utils"
 
 // 🚀 Fast path (default): Only checks for untyped nils (Zero overhead)
 data, err := utils.CastEventData[*UserData](event)

@@ -11,10 +11,10 @@ import (
 	"log"
 	"time"
 
-	gossip "github.com/seyallius/gossip/event"
-	"github.com/seyallius/gossip/event/bus"
-	goserr "github.com/seyallius/gossip/event/errors"
-	gosutils "github.com/seyallius/gossip/event/utils"
+	gossip "github.com/seyallius/gossip/v2/event"
+	"github.com/seyallius/gossip/v2/event/bus"
+	goserr "github.com/seyallius/gossip/v2/event/errors"
+	gosutils "github.com/seyallius/gossip/v2/event/utils"
 )
 
 // ----------------------------------------------- Types -------------------------------------------- //

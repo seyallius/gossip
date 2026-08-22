@@ -10,9 +10,9 @@ import (
 	"log"
 	"time"
 
-	gossip "github.com/seyallius/gossip/event"
-	"github.com/seyallius/gossip/event/bus"
-	"github.com/seyallius/gossip/event/middleware"
+	gossip "github.com/seyallius/gossip/v2/event"
+	"github.com/seyallius/gossip/v2/event/bus"
+	"github.com/seyallius/gossip/v2/event/middleware"
 )
 
 // Custom event types for auth service.

@@ -9,8 +9,8 @@ import (
 	"log"
 	"time"
 
-	gossip "github.com/seyallius/gossip/event"
-	"github.com/seyallius/gossip/event/bus"
+	gossip "github.com/seyallius/gossip/v2/event"
+	"github.com/seyallius/gossip/v2/event/bus"
 )
 
 // Cross-service event types.

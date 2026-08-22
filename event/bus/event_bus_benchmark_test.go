@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	. "github.com/seyallius/gossip/event"
+	. "github.com/seyallius/gossip/v2/event"
 )
 
 // run from cwd: go test -bench=. -benchmem -cpuprofile=cpu.prof ./

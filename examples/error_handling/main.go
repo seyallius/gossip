@@ -11,11 +11,11 @@ import (
 	"log"
 	"time"
 
-	gossip "github.com/seyallius/gossip/event"
-	"github.com/seyallius/gossip/event/bus"
-	goserr "github.com/seyallius/gossip/event/errors"
-	"github.com/seyallius/gossip/event/middleware"
-	"github.com/seyallius/gossip/event/sub"
+	gossip "github.com/seyallius/gossip/v2/event"
+	"github.com/seyallius/gossip/v2/event/bus"
+	goserr "github.com/seyallius/gossip/v2/event/errors"
+	"github.com/seyallius/gossip/v2/event/middleware"
+	"github.com/seyallius/gossip/v2/event/sub"
 )
 
 // Event types for our example

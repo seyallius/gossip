@@ -10,8 +10,8 @@ import (
 	"log"
 	"time"
 
-	"github.com/seyallius/gossip/event"
-	"github.com/seyallius/gossip/event/sub"
+	"github.com/seyallius/gossip/v2/event"
+	"github.com/seyallius/gossip/v2/event/sub"
 )
 
 // ----------------------------------------------- Types -------------------------------------------- //

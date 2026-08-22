@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/seyallius/gossip/event"
-	"github.com/seyallius/gossip/event/testdata"
+	"github.com/seyallius/gossip/v2/event"
+	"github.com/seyallius/gossip/v2/event/testdata"
 )
 
 // -------------------------------------------- Test Functions --------------------------------------------

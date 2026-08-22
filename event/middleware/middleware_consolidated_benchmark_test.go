@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/seyallius/gossip/event"
-	"github.com/seyallius/gossip/event/sub"
+	"github.com/seyallius/gossip/v2/event"
+	"github.com/seyallius/gossip/v2/event/sub"
 )
 
 // Define the Processor type alias to avoid import issues

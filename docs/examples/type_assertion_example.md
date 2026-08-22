@@ -53,7 +53,7 @@ type BadData struct {
 ```go
 package main
 
-import "github.com/seyallius/gossip/event/utils"
+import "github.com/seyallius/gossip/v2/event/utils"
 
 // FastUserDataNilChecker is a zero-allocation, reflection-free nil checker for *UserData.
 func FastUserDataNilChecker(v any) bool {

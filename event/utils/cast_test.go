@@ -8,8 +8,8 @@ package utils
 import (
 	"testing"
 
-	"github.com/seyallius/gossip/event"
-	"github.com/seyallius/gossip/event/errors"
+	"github.com/seyallius/gossip/v2/event"
+	"github.com/seyallius/gossip/v2/event/errors"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

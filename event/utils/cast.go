@@ -9,8 +9,8 @@ import (
 	"fmt"
 	"reflect"
 
-	"github.com/seyallius/gossip/event"
-	"github.com/seyallius/gossip/event/errors"
+	"github.com/seyallius/gossip/v2/event"
+	"github.com/seyallius/gossip/v2/event/errors"
 )
 
 // ----------------------------------------------- Types -------------------------------------------- //

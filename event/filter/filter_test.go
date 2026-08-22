@@ -9,9 +9,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/seyallius/gossip/event"
-	"github.com/seyallius/gossip/event/bus"
-	"github.com/seyallius/gossip/event/middleware"
+	"github.com/seyallius/gossip/v2/event"
+	"github.com/seyallius/gossip/v2/event/bus"
+	"github.com/seyallius/gossip/v2/event/middleware"
 	"github.com/stretchr/testify/assert"
 )
 

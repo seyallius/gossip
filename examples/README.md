@@ -19,13 +19,13 @@ This guide provides extensive documentation for using Gossip in real-world appli
 ### Installation
 
 ```bash
-go get github.com/seyallius/gossip
+go get github.com/seyallius/gossip/v2
 ```
 
 ### Import in Your Code
 
 ```go
-import gossip "github.com/seyallius/gossip/event"
+import gossip "github.com/seyallius/gossip/v2/event"
 ```
 
 ---
@@ -109,7 +109,7 @@ Create a dedicated file for event types:
 // events/types.go
 package events
 
-import gossip "github.com/seyallius/gossip/event"
+import gossip "github.com/seyallius/gossip/v2/event"
 
 const (
     // User events
@@ -168,7 +168,7 @@ package main
 import (
 	"log"
 
-	"github.com/seyallius/gossip/event/bus"
+	"github.com/seyallius/gossip/v2/event/bus"
 )
 
 var eventBus *bus.EventBus
@@ -204,8 +204,8 @@ Create handler registration function:
 package handlers
 
 import (
-	"github.com/seyallius/gossip"
-	"github.com/seyallius/gossip/event/bus"
+	"github.com/seyallius/gossip/v2"
+	"github.com/seyallius/gossip/v2/event/bus"
 
 	"yourapp/events"
 )
@@ -233,9 +233,9 @@ func RegisterProcessors(eventBus *bus.EventBus) {
 package services
 
 import (
-	"github.com/seyallius/gossip"
-	"github.com/seyallius/gossip/event"
-	"github.com/seyallius/gossip/event/bus"
+	"github.com/seyallius/gossip/v2"
+	"github.com/seyallius/gossip/v2/event"
+	"github.com/seyallius/gossip/v2/event/bus"
 
 	"yourapp/events"
 )
@@ -771,8 +771,8 @@ errors := bus.PublishSync(ctx, criticalEvent)
 ## Additional Resources
 
 - [Main README](../README.md) - Library overview
-- [API Documentation](https://pkg.go.dev/github.com/seyallius/gossip)
-- [GitHub Issues](https://github.com/seyallius/gossip/issues)
+- [API Documentation](https://pkg.go.dev/github.com/seyallius/gossip/v2)
+- [GitHub Issues](https://github.com/seyallius/gossip/v2/issues)
 
 ---
 
