@@ -423,3 +423,26 @@ func TestFilter_CombinedWithMiddleware(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 	assert.Equal(t, int32(2), atomic.LoadInt32(&executedCount))
 }
+
+// TestNewFilteredProcessor_NilArguments covers the degenerate wrappings. Both used to build a
+// closure that nil-panicked later, inside a bus worker, rather than at the call that built it.
+func TestNewFilteredProcessor_NilArguments(t *testing.T) {
+	evt := event.NewEvent("test.event", "payload")
+
+	t.Run("nil filter runs the processor", func(t *testing.T) {
+		called := false
+		processor := NewFilteredProcessor(nil, func(ctx context.Context, eventToFilter *event.Event) error {
+			called = true
+			return nil
+		})
+
+		assert.NoError(t, processor(context.Background(), evt))
+		assert.True(t, called, "expected an unfiltered processor to run")
+	})
+
+	t.Run("nil processor does nothing", func(t *testing.T) {
+		processor := NewFilteredProcessor(func(*event.Event) bool { return true }, nil)
+
+		assert.NoError(t, processor(context.Background(), evt))
+	})
+}

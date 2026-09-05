@@ -32,7 +32,14 @@ func NewEvent(eventType EventType, data any) *Event {
 // -------------------------------------------- Public API ------------------------------------------ //
 
 // WithMetadata adds metadata to the event and returns the event for chaining.
+//
+// The map is created on demand, because not every Event comes from NewEvent: one built as a struct
+// literal (which is what test fixtures and decoders tend to produce) carries a nil Metadata, and
+// assigning into that panics with "assignment to entry in nil map".
 func (e *Event) WithMetadata(key string, value any) *Event {
+	if e.Metadata == nil {
+		e.Metadata = make(map[string]any, 1)
+	}
 	e.Metadata[key] = value
 	return e
 }

@@ -29,7 +29,7 @@ type castConfig struct {
 // -------------------------------------------- Public API ------------------------------------------ //
 
 // CastEventData safely casts the event's Data field to type T.
-// It returns an error if the type assertion fails or if the data is nil.
+// It returns an error if the event is nil, if the type assertion fails, or if the data is nil.
 //
 // By default, it only checks for untyped nils (fast path).
 // To check for "typed nils" (which can cause panics later), use CastOptions:
@@ -40,6 +40,9 @@ func CastEventData[T any](e *event.Event, opts ...CastOption) (T, error) {
 	var zero T
 
 	// 1. Fast path: Check for untyped nil immediately
+	if e == nil {
+		return zero, errors.NewInvalidEventErrorf("cannot cast data from a nil event")
+	}
 	if e.Data == nil {
 		return zero, errors.ErrNilData
 	}

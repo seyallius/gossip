@@ -102,3 +102,13 @@ func TestCastEventData_ValueType(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "123", data.ID)
 }
+
+// TestCastEventData_NilEvent covers a nil *event.Event, which used to nil-dereference on e.Data
+// before any of the configured checks ran.
+func TestCastEventData_NilEvent(t *testing.T) {
+	data, err := CastEventData[*UserData](nil)
+
+	require.Error(t, err, "expected an error for a nil event")
+	assert.True(t, errors.IsInvalidEvent(err), "expected an InvalidEventError, got %T: %v", err, err)
+	assert.Nil(t, data, "expected the zero value for a nil event")
+}
