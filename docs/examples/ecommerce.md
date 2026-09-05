@@ -70,7 +70,7 @@ func orderNotificationProcessor(ctx context.Context, event *gossip.Event) error 
 }
 
 // Example of using SubscribeMultiple for order lifecycle events
-func setupOrderNotificationHandlers(bus *gossip.EventBus) []string {
+func setupOrderNotificationHandlers(eventBus *bus.EventBus) []string {
 	orderEvents := []gossip.EventType{
 		OrderCreated,
 		OrderPaid,
@@ -79,7 +79,7 @@ func setupOrderNotificationHandlers(bus *gossip.EventBus) []string {
 		OrderCancelled,
 	}
 
-	return bus.SubscribeMultiple(orderEvents, orderNotificationProcessor)
+	return eventBus.SubscribeMultiple(orderEvents, orderNotificationProcessor)
 }
 ```
 

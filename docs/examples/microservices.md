@@ -61,7 +61,7 @@ func crossServiceAuditProcessor(ctx context.Context, event *gossip.Event) error 
 }
 
 // Example of using SubscribeMultiple to handle events from different services
-func setupCrossServiceAuditHandlers(bus *gossip.EventBus) []string {
+func setupCrossServiceAuditHandlers(eventBus *bus.EventBus) []string {
 	crossServiceEvents := []gossip.EventType{
 		UserServiceUserCreated,
 		UserServiceUserUpdated,
@@ -69,7 +69,7 @@ func setupCrossServiceAuditHandlers(bus *gossip.EventBus) []string {
 		NotificationServiceSent,
 	}
 
-	return bus.SubscribeMultiple(crossServiceEvents, crossServiceAuditProcessor)
+	return eventBus.SubscribeMultiple(crossServiceEvents, crossServiceAuditProcessor)
 }
 ```
 
@@ -147,7 +147,7 @@ func (s *EmailService) handleUserCreated(ctx context.Context, event *gossip.Even
 
 	// Publish email sent event
 	s.bus.Publish(gossip.NewEvent(EmailServiceSent, map[string]string{
-		"to":      data["Email"].(string),
+		"to":      data.Email,
 		"subject": "Welcome!",
 	}))
 

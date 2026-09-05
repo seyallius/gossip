@@ -66,7 +66,7 @@ func securityAuditProcessor(ctx context.Context, event *gossip.Event) error {
 }
 
 // Example of using SubscribeMultiple for security events
-func setupSecurityHandlers(bus *gossip.EventBus) []string {
+func setupSecurityHandlers(eventBus *bus.EventBus) []string {
 	securityEvents := []gossip.EventType{
 		UserLoggedIn,
 		UserLoggedOut,
@@ -74,7 +74,7 @@ func setupSecurityHandlers(bus *gossip.EventBus) []string {
 		PasswordChanged,
 	}
 
-	return bus.SubscribeMultiple(securityEvents, securityAuditProcessor)
+	return eventBus.SubscribeMultiple(securityEvents, securityAuditProcessor)
 }
 ```
 
