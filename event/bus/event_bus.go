@@ -126,7 +126,11 @@ func (eb *EventBus) Subscribe(eventType event.EventType, eventProcessor sub.Even
 		EProcessor: eventProcessor,
 	}
 
-	eb.subscriptions[eventType] = appendSubscription(eb.subscriptions[eventType], subscription)
+	// A plain append is safe against a concurrent dispatch even though the removal below is not:
+	// append either writes at index len -- which no in-flight reader can observe, since its slice
+	// header carries the old, smaller length -- or allocates a new array outright. Removal has to
+	// shift elements down into the indices readers *are* walking, which is why it copies instead.
+	eb.subscriptions[eventType] = append(eb.subscriptions[eventType], subscription)
 	return subscription.Id
 }
 
@@ -270,9 +274,9 @@ func (eb *EventBus) dispatch(ctx context.Context, eventToPub *event.Event) []err
 	subscriptions := eb.subscriptions[eventToPub.Type]
 	eb.mu.RUnlock()
 
-	// Iterating with the lock released is safe because Subscribe and Unsubscribe replace this slice
-	// instead of editing it, which makes what we hold an immutable snapshot. Holding the lock for the
-	// whole loop would instead let one slow processor block every subscription change on the bus.
+	// Iterating with the lock released is safe because neither Subscribe nor Unsubscribe rewrites any
+	// element this snapshot covers -- see the comments on each. Holding the lock for the whole loop
+	// would instead let one slow processor block every subscription change on the bus.
 	var pubErrs []error
 	for _, subscription := range subscriptions {
 		if subscription.EProcessor == nil {
@@ -286,19 +290,12 @@ func (eb *EventBus) dispatch(ctx context.Context, eventToPub *event.Event) []err
 	return pubErrs
 }
 
-// appendSubscription returns a new slice holding subscriptions plus added.
-//
-// Copy-on-write, because dispatch keeps reading the old slice after releasing the read lock. Growing
-// the slice in place would be safe on its own, but pairing it with an in-place removal is not, so
-// both mutations use the same discipline. Subscriptions change far less often than events are
-// published, which is what makes paying an allocation here the cheap side of the trade.
-func appendSubscription(subscriptions []*sub.Subscription, added *sub.Subscription) []*sub.Subscription {
-	updated := make([]*sub.Subscription, len(subscriptions), len(subscriptions)+1)
-	copy(updated, subscriptions)
-	return append(updated, added)
-}
-
 // removeSubscriptionAt returns a new slice holding every subscription except the one at index i.
+//
+// Copy-on-write, because dispatch keeps reading the old slice after releasing the read lock. The
+// obvious append(subscriptions[:i], subscriptions[i+1:]...) shifts elements down inside the backing
+// array a publish may be walking right now, which the race detector flags. Removal is rare next to
+// publishing, so paying an allocation on this side is the cheap direction.
 func removeSubscriptionAt(subscriptions []*sub.Subscription, i int) []*sub.Subscription {
 	remaining := make([]*sub.Subscription, 0, len(subscriptions)-1)
 	remaining = append(remaining, subscriptions[:i]...)
