@@ -460,16 +460,19 @@ Chain multiple middleware for robust handling:
 
 ```go
 handler := middleware.Chain(
-    middleware.WithRecovery(),                      // Catch panics
+    middleware.WithLogging("orders", logFn),        // Log execution
     middleware.WithRetry(3, 100*time.Millisecond),  // Retry on failure
     middleware.WithTimeout(5*time.Second),          // Prevent hanging
-    middleware.WithLogging(),                       // Log execution
+    middleware.WithRecovery(),                      // Turn panics into errors
 )(myProcessor)
 
 bus.Subscribe(UserCreated, handler)
 ```
 
-**Order matters:** Place recovery first to catch all panics.
+**Order matters:** the first middleware is the outermost wrapper, so put `WithRecovery` **last**. It
+converts a panic into an error, and everything wrapped around it then sees that error -- retry retries
+it, logging records it. Put it first instead and it catches the panic only after it has unwound past
+them, so neither ever knows anything went wrong.
 
 ### 2. Conditional Processing with Filters
 

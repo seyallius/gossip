@@ -10,14 +10,18 @@ Let me explain **EVERY. SINGLE. FIELD.**
 
 ```go
 type EventBus struct {
-    mu          sync.RWMutex                 // Read-write mutex for subscription map
-    subscriptions map[EventType][]*Subscription // Map of event types to processors
-    workers     int                          // Number of worker goroutines
-    eventChan   chan *Event                  // Buffered channel for events
-    ctx         context.Context              // Context for cancellation
-    cancel      context.CancelFunc           // Function to cancel context
-    wg          sync.WaitGroup               // WaitGroup to track workers
-    provider    Provider                     // The underlying transport provider
+    subscriptions   map[EventType][]*Subscription // Map of event types to processors
+    eventChan       chan *Event                   // Buffered channel for events
+    workers         int                           // Number of worker goroutines
+    shutdownTimeout time.Duration                 // How long Shutdown waits for the drain
+    subscriptionSeq atomic.Uint64                 // Monotonic counter behind every subscription ID
+    ctx             context.Context               // Context handed to processors
+    cancel          context.CancelFunc            // Function to cancel that context
+    mu              sync.RWMutex                  // Read-write mutex for the subscription map
+    closed          bool                          // Guarded by mu; true once Shutdown closed eventChan
+    shutdownOnce    sync.Once                     // Makes Shutdown idempotent
+    shutdownErr     error                         // Replayed to later Shutdown callers
+    wg              sync.WaitGroup                // WaitGroup to track workers
 }
 ```
 
@@ -41,9 +45,13 @@ processors := eb.subscriptions[eventType]
 eb.mu.RUnlock()
 
 eb.mu.Lock()   // ← Lock for WRITING (exclusive)
-eb.subscriptions[eventType] = append(...)
+eb.subscriptions[eventType] = append(eb.subscriptions[eventType], sub)
 eb.mu.Unlock()
 ```
+
+Note what the read side does **not** do: hold the lock while running processors. It reads the slice
+header and lets go, so one slow processor cannot block every subscription change on the bus. That
+puts the safety burden on the write side -- see *Why removal copies and addition does not* below.
 
 ##### `subscriptions map[EventType][]*Subscription`
 
@@ -83,19 +91,17 @@ When you call `Publish()`, the event goes into this channel. Workers pull from i
 
 ##### `ctx context.Context` and `cancel context.CancelFunc`
 
-These are for **graceful shutdown**.
-
-When you call `Shutdown()`, it calls `cancel()`. This sends a signal to all workers: "Stop accepting new work, finish what you're doing, and exit."
+This is the context handed to every processor, and it is cancelled at the **end** of `Shutdown`, once
+the backlog has drained.
 
 ```go
 ctx, cancel := context.WithCancel(context.Background())
 ```
 
-Workers check:
-```go
-case <-eb.ctx.Done():
-    return  // Exit
-```
+It is tempting to cancel it first, as the signal that shutdown has begun. Do that and the final batch
+of events -- the ones the drain exists to save -- all run under an already-cancelled context, so every
+context-aware database write and HTTP call inside them fails instantly. Closing `eventChan` is the
+stop signal; cancelling the context is the cleanup.
 
 ##### `wg sync.WaitGroup`
 
@@ -114,8 +120,9 @@ This ensures **graceful shutdown** - we don't just kill workers mid-processing.
 ```go
 // Config holds configuration for the event bus.
 type Config struct {
-    Workers    int // Number of worker goroutines
-    BufferSize int // Size of the event channel buffer
+    Workers         int           // Number of worker goroutines
+    BufferSize      int           // Size of the event channel buffer
+    ShutdownTimeout time.Duration // How long Shutdown waits for buffered events to drain
 }
 
 // DefaultConfig returns sensible default configuration.
@@ -138,14 +145,29 @@ func NewEventBus(cfg *Config) *EventBus {
         cfg = DefaultConfig()
     }
 
+    // Out-of-range values are replaced, not honoured
+    workers := cfg.Workers
+    if workers <= 0 {
+        workers = defaultWorkers
+    }
+    bufferSize := cfg.BufferSize
+    if bufferSize <= 0 {
+        bufferSize = defaultBufferSize
+    }
+    shutdownTimeout := cfg.ShutdownTimeout
+    if shutdownTimeout <= 0 {
+        shutdownTimeout = defaultShutdownTimeout
+    }
+
     ctx, cancel := context.WithCancel(context.Background())
 
     bus := &EventBus{
-        subscriptions: make(map[EventType][]*Subscription),
-        workers:       cfg.Workers,
-        eventChan:     make(chan *Event, cfg.BufferSize),
-        ctx:           ctx,
-        cancel:        cancel,
+        subscriptions:   make(map[EventType][]*Subscription),
+        eventChan:       make(chan *Event, bufferSize),
+        workers:         workers,
+        shutdownTimeout: shutdownTimeout,
+        ctx:             ctx,
+        cancel:          cancel,
     }
 
     bus.start()
@@ -153,9 +175,12 @@ func NewEventBus(cfg *Config) *EventBus {
 }
 ```
 
-Note that the event channel is buffered with `cfg.BufferSize`. This allows for non-blocking publish operations up to the buffer capacity. The `context.WithCancel` creates a cancellation context that will be used during shutdown.
+Note that the event channel is buffered with `bufferSize`. This allows for non-blocking publish operations up to the buffer capacity.
 
-**Why `context.WithCancel`?** So we can signal all workers to stop when `Shutdown()` is called.
+**Why clamp the config?** Because none of the out-of-range values describes a usable bus. Zero workers
+accepts events and never processes them. A zero buffer size makes the channel unbuffered, and since
+`Publish` uses a non-blocking send, that means nearly every publish is dropped -- depending on whether
+a worker happens to be parked on the receive at that instant.
 
 ### Subscription Management
 
@@ -165,44 +190,53 @@ func (eb *EventBus) Subscribe(eventType EventType, processor EventProcessor) str
     eb.mu.Lock()
     defer eb.mu.Unlock()
 
-    subscriptionID := fmt.Sprintf("%s-%d", eventType, len(eb.subscriptions[eventType]))
-
     sub := &Subscription{
-        ID:         subscriptionID,
+        Id:         fmt.Sprintf("%s-%d", eventType, eb.subscriptionSeq.Add(1)),
         Type:       eventType,
-        Processor:  processor,
+        EProcessor: processor,
     }
 
     eb.subscriptions[eventType] = append(eb.subscriptions[eventType], sub)
 
-    return subscriptionID
+    return sub.Id
 }
 ```
 
-The subscription ID is generated using the event type and the current count of processors for that type. This provides a unique but predictable ID for each subscription. The mutex lock ensures thread safety when modifying the subscription map.
+The subscription ID is the event type plus a **monotonic per-bus counter**, giving IDs like
+`user.created-1`, `user.created-2`. The mutex lock ensures thread safety when modifying the
+subscription map.
 
 **Step by step:**
 1. **Lock** the subscriptions map (exclusive write access)
-2. Generate a unique ID (like `user.created-0`, `user.created-1`)
+2. Generate a unique ID
 3. Create a `Subscription` wrapper (ID + processor)
 4. Append to the slice for this event type
 5. Return the ID (so you can unsubscribe later)
+
+**Why does uniqueness matter so much?** Because `Unsubscribe` removes the **first** subscription whose
+ID matches. If two subscriptions can share an ID, then unsubscribing one silently removes the other,
+and the handler you meant to remove stays live. Anything derived from the current length of the slice
+has the same problem -- remove `user.created-0` and the next subscriber is handed that ID again.
 
 **Why defer unlock?** In case something panics, the lock is always released. Otherwise, you'd deadlock the entire bus.
 
 ```go
 // Unsubscribe removes a subscription by ID.
-func (eb *EventBus) Unsubscribe(subscriptionID string) bool {
+func (eb *EventBus) Unsubscribe(subscriptionId string) bool {
     eb.mu.Lock()
     defer eb.mu.Unlock()
 
-    for eventType, subs := range eb.subscriptions {
-        for i, sub := range subs {
-            if sub.ID == subscriptionID {
-                // Unsubscribed processor
-                eb.subscriptions[eventType] = append(subs[:i], subs[i+1:]...)
-                return true
+    for eventType, subscriptions := range eb.subscriptions {
+        for i, subscription := range subscriptions {
+            if subscription.Id != subscriptionId {
+                continue
             }
+            if remaining := removeSubscriptionAt(subscriptions, i); len(remaining) > 0 {
+                eb.subscriptions[eventType] = remaining
+            } else {
+                delete(eb.subscriptions, eventType) // don't leak empty map keys
+            }
+            return true
         }
     }
 
@@ -212,40 +246,78 @@ func (eb *EventBus) Unsubscribe(subscriptionID string) bool {
 
 The unsubscribe operation iterates through all subscription lists to find and remove the matching subscription. This is O(n) complexity but is acceptable since unsubscription typically happens infrequently.
 
+### Why removal copies and addition does not
+
+`dispatch` releases the read lock before running processors, so it walks a slice that `Subscribe` and
+`Unsubscribe` may be changing underneath it. That makes what each of them does to the backing array
+the whole safety argument -- and the two are not symmetric.
+
+The obvious removal is `append(subscriptions[:i], subscriptions[i+1:]...)`, and it is a **data race**
+here: it shifts elements down inside the existing backing array, over exactly the indices an
+in-flight dispatch is reading. The race detector flags it. So removal builds a new slice:
+
+```go
+func removeSubscriptionAt(subscriptions []*Subscription, i int) []*Subscription {
+    remaining := make([]*Subscription, 0, len(subscriptions)-1)
+    remaining = append(remaining, subscriptions[:i]...)
+    return append(remaining, subscriptions[i+1:]...)
+}
+```
+
+Addition needs no such thing. A plain `append` either writes at index `len` -- which no in-flight
+reader can observe, because its slice header carries the old, smaller length -- or allocates a new
+array outright. Both are invisible to a dispatch already in progress.
+
+That asymmetry is worth keeping. Applying copy-on-write to `Subscribe` as well looks tidier and makes
+every subscription an O(n) copy, which is quadratic across a run: in this codebase it took
+`BenchmarkEventBus_Subscribe` from ~355ns/op to ~183µs/op. Removal is rare enough to absorb the
+allocation; addition is not obliged to pay for symmetry it does not need.
+
 ### Event Publishing
 
 #### Asynchronous Publishing
 
 ```go
 // Publish sends an event to all registered processors asynchronously.
-func (eb *EventBus) Publish(event *Event) {
+func (eb *EventBus) Publish(event *Event) bool {
+    if event == nil {
+        return false
+    }
+
+    eb.mu.RLock()
+    defer eb.mu.RUnlock()
+
+    if eb.closed {
+        return false
+    }
+
     select {
     case eb.eventChan <- event:
-        // Event successfully sent to channel
-
-    case <-eb.ctx.Done():
-        // Event bus is shutting down
-
-    default:
-        // Event channel full, dropping event
-        log.Printf("Event channel full, dropping event: %s", event.Type)
+        return true
+    default: // buffer full - drop the event and tell the caller
+        return false
     }
 }
 ```
 
-The publish operation uses a non-blocking select statement that has three cases:
-1. Successful send to the event channel (most common case)
-2. Context cancellation (the event bus is shutting down)
-3. Default case where the channel buffer is full (event gets dropped)
+The publish operation uses a non-blocking select, so it never blocks the caller, and returns whether
+the bus accepted the event.
 
-This approach prevents blocking the caller when the event channel is full, which is important for maintaining system responsiveness.
-
-**The `select` statement:**
-- **First case**: Try to push event into the channel. If there's space, it succeeds immediately (non-blocking).
-- **Second case**: If the bus is shutting down, don't accept new events.
-- **Default case**: If the channel is full (buffer exhausted), drop the event with a warning.
+**Why the read lock around the send?** Because `Shutdown` closes `eventChan`, and sending on a closed
+channel is a **panic**, not an error. Checking a flag and then sending is not enough on its own: the
+close can land between the two. `Shutdown` takes the write lock before closing, so holding the read
+lock across both the check and the send is what makes them mutually exclusive. Without it, a request
+goroutine publishing at the moment the process starts shutting down takes the process down with it.
 
 **Why drop instead of block?** Because blocking the publisher could freeze your entire app. It's better to lose an event than hang the system. (You can adjust `BufferSize` to prevent this.)
+
+**Why return a bool?** Because a dropped event that nobody hears about is indistinguishable from one
+that was processed. The caller is the only one who knows whether this particular event is worth a
+retry, a log line, a metric, or a fall back to `PublishSync`.
+
+**Why reject nil?** A nil event used to reach `dispatch` and nil-dereference on `event.Type` -- between
+the `RLock` and the `RUnlock`, so the panic left the subscription lock held and the next `Subscribe`
+or `Shutdown` deadlocked behind it. The bus wedged, a long way from the code that published nil.
 
 #### Synchronous Publishing
 
@@ -260,11 +332,11 @@ func (eb *EventBus) PublishSync(ctx context.Context, event *Event) []error {
         return nil
     }
 
-    errors := make([]error, 0)
+    var errors []error
 
     for _, sub := range processors {
-        if err := sub.Processor(ctx, event); err != nil {
-            errors = append(errors, fmt.Errorf("processor %s: %w", sub.ID, err))
+        if err := sub.EProcessor(ctx, event); err != nil {
+            errors = append(errors, fmt.Errorf("handler %s: %w", sub.Id, err))
         }
     }
 
@@ -304,95 +376,115 @@ The start method creates the configured number of worker goroutines. Each worker
 func (eb *EventBus) worker() {
     defer eb.wg.Done()
 
-    for {
-        select {
-        case event, ok := <-eb.eventChan:
-            if !ok {
-                return // Worker stopped
-            }
-            eb.dispatch(event)
-
-        case <-eb.ctx.Done():
-            return // Worker shutting down
-        }
+    for event := range eb.eventChan {
+        _ = eb.dispatch(eb.ctx, event)
     }
 }
 ```
 
-Each worker runs an infinite loop that selects from two channels:
-1. The event channel - when an event arrives, it gets dispatched
-2. The cancellation context - when cancelled, the worker exits
+Each worker ranges over the event channel. `range` ends when the channel is closed **and drained**,
+which is exactly the shutdown behaviour we want.
 
-The `ok` check is important to detect when the event channel is closed during shutdown.
-
-**The infinite loop:**
-- **Wait** for an event from the channel
-- **Or** wait for a shutdown signal
-- If event arrives, dispatch it to processors
-- If shutdown signal, exit gracefully
-
-**Why `ok` check?** When a channel is closed, receivers get `ok == false`. This tells the worker to stop.
+**Why not also select on `ctx.Done()`?** That is the obvious shape, and it quietly throws away the
+backlog. `select` picks a ready case at random, so once the context is cancelled a worker with a
+hundred buffered events is as likely to exit as to process the next one. Everything the bus had
+already accepted and acknowledged to its publishers evaporates. Closing the channel says "no more
+events are coming"; the workers then finish what is in it and exit on their own.
 
 #### dispatch() - Running processors
 
 ```go
 // dispatch sends an event to all registered processors.
-func (eb *EventBus) dispatch(event *Event) {
+func (eb *EventBus) dispatch(ctx context.Context, event *Event) []error {
     eb.mu.RLock()
-    processors := eb.subscriptions[event.Type]
+    subscriptions := eb.subscriptions[event.Type]
     eb.mu.RUnlock()
 
-    if len(processors) == 0 {
-        return
+    var pubErrs []error
+    for _, subscription := range subscriptions {
+        if subscription.EProcessor == nil {
+            continue
+        }
+        if err := subscription.EProcessor(ctx, event); err != nil {
+            pubErrs = append(pubErrs, fmt.Errorf("handler %s: %w", subscription.Id, err))
+        }
     }
 
-    for _, sub := range processors {
-        go func(s *Subscription) {
-            if err := s.Processor(eb.ctx, event); err != nil {
-                log.Printf("Processor %s failed for event %s: %v", s.ID, event.Type, err)
-            }
-        }(sub)
-    }
+    return pubErrs
 }
 ```
 
-The dispatch method gets a read lock to access the processors (avoiding blocking while processing), then calls each processor in a separate goroutine. This allows all processors for an event to run concurrently.
+The dispatch method takes the read lock only long enough to read the slice header, then runs each
+processor **in the calling goroutine**, collecting rather than swallowing their errors. `PublishSync`
+returns that slice to its caller; a worker discards it.
 
 **Step by step:**
 1. Look up processors for this event type
-2. Run each processor in its own goroutine
-3. If a processor fails, log the error but **don't stop** other processors
+2. Run each in turn; a failure is collected and the rest still run
+3. Return every error, tagged with the subscription that produced it
 
-**Why run in goroutines?** So that if one processor is slow, it doesn't block other processors from running.
+**Why serially, not one goroutine each?** Concurrency across events is what the worker pool is for, and
+it is bounded. Spawning a goroutine per processor per event is unbounded: a burst of events with five
+subscribers each fans out to five goroutines per event with nothing throttling them. Running them in
+the worker keeps the parallelism at `Workers`, which is the number the user configured.
+
+**Why does dispatch return errors instead of logging them?** Because a library that logs on your behalf
+gives you one hard-coded destination and no way to react. `PublishSync` hands them back; a processor
+that wants logging composes `middleware.WithLogging` with the destination of its choice.
 
 ### Graceful Shutdown
 
 ```go
 // Shutdown gracefully stops the event bus and waits for all workers to finish.
-func (eb *EventBus) Shutdown() {
-    log.Println("Shutting down event bus...")
+func (eb *EventBus) Shutdown() error {
+    eb.shutdownOnce.Do(func() {
+        eb.mu.Lock()
+        eb.closed = true
+        close(eb.eventChan) // workers drain what is left, then their range loops end
+        eb.mu.Unlock()
 
-    eb.cancel()           // ← Signal workers to stop
-    close(eb.eventChan)   // ← Close the channel
-    eb.wg.Wait()          // ← Wait for all workers to finish
+        drained := make(chan struct{})
+        go func() {
+            eb.wg.Wait()
+            close(drained)
+        }()
 
-    log.Println("Event bus shutdown complete")
+        select {
+        case <-drained:
+        case <-time.After(eb.shutdownTimeout):
+            eb.shutdownErr = goserr.NewTimeoutErrorf(eb.shutdownTimeout.String(),
+                "event bus shutdown timed out with events still in flight")
+        }
+
+        eb.cancel() // cancelled last: nothing runs under this context any more
+    })
+    return eb.shutdownErr
 }
 ```
 
 The shutdown process:
-1. Cancels the context, which signals all workers to stop
-2. Closes the event channel, which allows workers to detect shutdown and return
-3. Waits for all workers to finish using the wait group
+1. Marks the bus closed and closes the event channel, under the write lock
+2. Waits for the workers to drain the backlog and exit
+3. Gives up after `ShutdownTimeout` and reports it, rather than hanging forever
+4. Cancels the context the processors were given
 
-This ensures all in-flight events are processed before the event bus exits.
+**Order matters, and it is the opposite of the intuitive one:**
 
-**Order matters:**
-1. **Cancel context**: Workers stop pulling new events
-2. **Close channel**: Workers process remaining events in the buffer, then exit
-3. **Wait**: Block until all workers finish
+- **Close the channel first, under the write lock.** This is the stop signal. Doing it under the lock
+  is what stops a concurrent `Publish` from sending on a closed channel and panicking.
+- **Then wait.** The workers are ranging over the channel, so they finish the buffer and exit on their
+  own. Every event the bus accepted is delivered.
+- **Cancel the context last.** It is what processors are handed. Cancelling it first aborts the very
+  events this drain exists to save.
 
-This ensures **no event is lost** and **no goroutine leak**.
+**Why the timeout?** Because "wait for the workers" and "one processor is wedged on a dead socket" are
+the same state from here. Five seconds by default, then the context is cancelled -- so context-aware
+processors unwind -- and the caller is told the drain did not finish.
+
+**Why `sync.Once`?** Two independent defers on one bus is an ordinary thing to write, and closing an
+already-closed channel is a panic. Later callers get the first call's result.
+
+This ensures **no accepted event is lost**, **no goroutine leak**, and **no panic on the way out**.
 
 ## Concurrency Model
 
@@ -410,8 +502,12 @@ Thread safety is achieved through:
 
 1. **RWMutex** for subscription map access:
    - `Subscribe()` and `Unsubscribe()` use write locks
-   - `dispatch()` and `PublishSync()` use read locks
+   - `dispatch()`, `PublishSync()` and `Publish()` use read locks
    - This allows concurrent reads while preventing concurrent writes/reads during modifications
+   - The read lock is released before processors run, which is only safe because the write side is
+     copy-on-write (see above)
+   - `Publish()` holds it across the closed-check and the channel send, which is what makes those
+     mutually exclusive with `Shutdown()` closing the channel
 
 2. **Channel-based Communication**:
    - The event channel is safe for concurrent use
@@ -427,36 +523,33 @@ Gossip provides a global singleton event bus for application-wide access:
 
 ```go
 var (
-    globalBus *EventBus
-    once      sync.Once
+    globalBus     *EventBus
+    globalBusOnce sync.Once
 )
 
 // GetGlobalBus returns the singleton event bus instance.
 func GetGlobalBus() *EventBus {
-    once.Do(func() {
+    globalBusOnce.Do(func() {
         globalBus = NewEventBus(DefaultConfig())
     })
     return globalBus
 }
+
+// InitGlobalBus initializes the global event bus with custom configuration.
+func InitGlobalBus(cfg *Config) {
+    globalBusOnce.Do(func() {
+        globalBus = NewEventBus(cfg)
+    })
+}
 ```
 
 The global bus uses `sync.Once` to ensure it's initialized only once, even in concurrent scenarios.
+Note that both functions share that `Once`: `InitGlobalBus` has to run before anything reaches for
+`GetGlobalBus`, or the defaults win and the custom config is silently ignored. Call it early in
+`main()`.
 
-### Global Convenience Functions
-
-```go
-// Publish is a convenience function to publish events to the global bus.
-func Publish(event *Event) {
-    GetGlobalBus().Publish(event)
-}
-
-// Subscribe is a convenience function to subscribe to the global bus.
-func Subscribe(eventType EventType, processor EventProcessor) string {
-    return GetGlobalBus().Subscribe(eventType, processor)
-}
-```
-
-These functions provide a simple API for applications that want to use a global event bus without managing the instance themselves.
+There are no package-level `Publish` or `Subscribe` shortcuts. Go through `GetGlobalBus()`, which
+keeps it obvious at every call site that a process-wide singleton is involved.
 
 ## Performance Considerations
 
@@ -476,9 +569,10 @@ The number of worker goroutines should match the workload characteristics:
 
 ### Memory Management
 
-- Events are processed in batches when possible to reduce allocation overhead
 - Buffer sizes are pre-allocated where possible
-- Event objects are immutable after creation to avoid copying overhead
+- `dispatch` allocates its error slice lazily, so the common case of no failures costs nothing
+- Subscription changes allocate a fresh slice (copy-on-write); publishes allocate none
+- Event objects are treated as immutable after creation to avoid copying overhead
 
 ### Concurrency Patterns
 
@@ -522,6 +616,10 @@ func CreateUser() {
 ```
 
 Your API endpoint takes 5 seconds to respond! With async, `Publish()` returns instantly, and processors run in the background.
+
+The cost is that the publisher no longer learns whether processing worked -- and, when the buffer is
+full, whether it even started. `Publish` returning a bool covers the second half of that: the caller
+is told the event was dropped. For the first half, use `PublishSync`.
 
 ---
 

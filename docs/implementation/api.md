@@ -70,16 +70,17 @@ event := NewEvent(UserCreated, data).
 
 ```go
 type Config struct {
-    Driver     string // "memory" or "redis"
-    Workers    int    // Number of worker goroutines
-    BufferSize int    // Size of the event channel buffer
-    RedisAddr  string // Redis address (for Redis provider)
-    RedisPwd   string // Redis password (for Redis provider)
-    RedisDB    int    // Redis database (for Redis provider)
+    Workers         int           // Number of worker goroutines
+    BufferSize      int           // Size of the event channel buffer
+    ShutdownTimeout time.Duration // How long Shutdown waits for the backlog to drain
 }
 ```
 
-Configuration for the event bus.
+Configuration for the event bus. Any field left at zero (or negative) falls back to its default:
+10 workers, a buffer of 1000, and a 5 second shutdown timeout. Out-of-range values are replaced
+rather than honoured -- a bus with no workers would accept events and never process them, and an
+unbuffered channel turns `Publish`'s non-blocking send into a drop whenever no worker is parked on
+the receive.
 
 ### Methods
 
@@ -89,7 +90,10 @@ Configuration for the event bus.
 func (eb *EventBus) Subscribe(eventType EventType, processor EventProcessor) string
 ```
 
-Registers a processor for a specific event type and returns a subscription ID.
+Registers a processor for a specific event type and returns a subscription ID. The ID is unique for
+the lifetime of the bus and is the only handle `Unsubscribe` accepts, so keep it if the subscription
+is ever to be removed. Several processors may subscribe to the same event type; each one receives
+every published event.
 
 **Example:**
 ```go
@@ -164,10 +168,12 @@ eventBus.UnsubscribeMultiple([]string{id1, id2, id3})
 #### Publish
 
 ```go
-func (eb *EventBus) Publish(event *Event) error
+func (eb *EventBus) Publish(event *Event) bool
 ```
 
-Publishes an event to the bus.
+Publishes an event to the bus asynchronously, reporting whether the bus accepted it. It never blocks:
+`false` means the event was dropped, either because the buffer was full or because the bus is shut
+down. It also rejects a nil event.
 
 **Example:**
 ```go
@@ -175,9 +181,8 @@ event := gossip.NewEvent(UserCreated, &UserData{
     UserID: "123",
     Username: "alice",
 })
-err := eventBus.Publish(event)
-if err != nil {
-    log.Printf("Failed to publish event: %v", err)
+if !eventBus.Publish(event) {
+    log.Printf("event bus rejected the %s event", UserCreated)
 }
 ```
 
@@ -187,7 +192,10 @@ if err != nil {
 func (eb *EventBus) Shutdown() error
 ```
 
-Shuts down the event bus and cleans up resources.
+Shuts down the event bus: it stops accepting new events, lets the workers finish everything `Publish`
+has already accepted, and then cancels the bus context. It returns an error only if that drain was
+still running when `ShutdownTimeout` elapsed. Calling it more than once is safe -- later calls do
+nothing and return the first call's result.
 
 #### DefaultConfig
 
@@ -195,7 +203,8 @@ Shuts down the event bus and cleans up resources.
 func DefaultConfig() *Config
 ```
 
-Returns sensible default configuration with 10 workers and a buffer size of 1000.
+Returns sensible default configuration: 10 workers, a buffer size of 1000, and a 5 second shutdown
+timeout.
 
 **Example:**
 ```go
@@ -242,10 +251,12 @@ subscriptionID := eventBus.Subscribe(UserCreated, func(ctx context.Context, even
 ### Publish
 
 ```go
-func (eb *EventBus) Publish(event *Event)
+func (eb *EventBus) Publish(event *Event) bool
 ```
 
-Sends an event to all registered processors asynchronously. This method returns immediately and does not wait for processors to complete. If the event channel is full, the event may be dropped.
+Sends an event to all registered processors asynchronously. This method returns immediately and does
+not wait for processors to complete. A full buffer means the event is dropped -- which is what the
+return value is for.
 
 **Example:**
 ```go
@@ -253,7 +264,10 @@ event := NewEvent(UserCreated, &UserData{
     UserID: "123",
     Email:  "user@example.com",
 })
-eventBus.Publish(event)
+if !eventBus.Publish(event) {
+    // Buffer full or bus shut down: retry, log, or fall back to PublishSync
+    log.Printf("event bus rejected the %s event", UserCreated)
+}
 ```
 
 ### PublishSync
@@ -291,14 +305,27 @@ if success {
 ### Shutdown
 
 ```go
-func (eb *EventBus) Shutdown()
+func (eb *EventBus) Shutdown() error
 ```
 
-Gracefully stops the event bus and waits for all workers to finish. This method blocks until all workers have completed their current tasks.
+Gracefully stops the event bus. It closes the bus to new events, lets the workers drain the backlog
+(so events already accepted are delivered rather than discarded), waits for them, and only then
+cancels the context processors were given -- cancelling it first would abort the very events the
+drain exists to save.
+
+It blocks for at most `Config.ShutdownTimeout`, after which it cancels the context anyway and returns
+a `TimeoutError`, so one wedged processor cannot hang process exit. It is idempotent.
+
+Because it drains, `Shutdown` is also the tidiest way to make a test deterministic: publish, shut
+down, assert -- no `time.Sleep` to tune.
 
 **Example:**
 ```go
-defer eventBus.Shutdown() // Good practice to defer shutdown
+defer func() {
+    if err := eventBus.Shutdown(); err != nil {
+        log.Printf("event bus shutdown did not finish cleanly: %v", err)
+    }
+}()
 ```
 
 ## EventProcessor
@@ -333,11 +360,12 @@ Middleware wraps an EventProcessor with additional behavior. It takes an EventPr
 func WithRetry(maxRetries int, initialDelay time.Duration) Middleware
 ```
 
-Creates a middleware that retries failed processors with exponential backoff.
+Creates a middleware that retries failed processors with exponential backoff. It runs the initial
+attempt plus `maxRetries` retries, so `0` means a single attempt; a negative value is treated as `0`.
 
 **Parameters:**
 - `maxRetries`: Maximum number of retry attempts
-- `initialDelay`: Initial delay between retries
+- `initialDelay`: Initial delay between retries, doubled after each failure
 
 **Example:**
 ```go
@@ -351,7 +379,13 @@ eventBus.Subscribe(UserCreated, processor)
 func WithTimeout(timeout time.Duration) Middleware
 ```
 
-Creates a middleware that adds a timeout to processor execution.
+Creates a middleware that adds a timeout to processor execution. An expired deadline is reported as
+an `errors.TimeoutError` wrapping `context.DeadlineExceeded`, so both `goserr.IsTimeout(err)` and
+`errors.Is(err, context.DeadlineExceeded)` recognise it; a cancelled parent context is passed through
+unchanged, because that is a cancellation and not a timeout. A non-positive timeout means no timeout.
+
+Note that the deadline bounds how long the middleware waits, not the processor itself: a processor
+that ignores `ctx` keeps running in its own goroutine after the timeout has been reported.
 
 **Parameters:**
 - `timeout`: Maximum time to allow for processor execution
@@ -368,7 +402,12 @@ eventBus.Subscribe(UserCreated, processor)
 func WithRecovery() Middleware
 ```
 
-Creates a middleware that recovers from panics in processors, preventing them from crashing the worker goroutine.
+Creates a middleware that recovers from panics in processors, preventing them from crashing the
+worker goroutine, and reports the panic as an `errors.ProcessingError`. If the panic value is itself
+an error it stays reachable through `errors.As`. The stack is logged.
+
+Put it innermost in a `Chain` (last in the argument list) so the middleware around it sees the error
+and can act on it -- an outer `WithRecovery` catches the panic only after it has unwound past them.
 
 **Example:**
 ```go
@@ -379,14 +418,19 @@ eventBus.Subscribe(UserCreated, processor)
 ### WithLogging
 
 ```go
-func WithLogging() Middleware
+func WithLogging(msg string, logFunc func(message string)) Middleware
 ```
 
-Creates a middleware that logs processor execution time and errors.
+Creates a middleware that logs processor execution time and errors, prefixing each line with `msg`
+and handing it to `logFunc`.
+
+**Parameters:**
+- `msg`: Prefix for every logged line
+- `logFunc`: Where to send the line -- `log.Println`, a structured logger, a test recorder
 
 **Example:**
 ```go
-processor := WithLogging()(myProcessor)
+processor := WithLogging("orders", func(message string) { log.Println(message) })(myProcessor)
 eventBus.Subscribe(UserCreated, processor)
 ```
 
@@ -401,10 +445,10 @@ Chains multiple middlewares together, applying them in reverse order (last to fi
 **Example:**
 ```go
 processor := Chain(
-    WithRecovery(),
+    WithLogging("orders", func(message string) { log.Println(message) }),
     WithRetry(3, 100*time.Millisecond),
     WithTimeout(5*time.Second),
-    WithLogging(),
+    WithRecovery(), // innermost, so the retry and the log see a recovered panic as a failure
 )(myProcessor)
 
 eventBus.Subscribe(UserCreated, processor)
@@ -426,7 +470,9 @@ Filter determines if an event should be processed by a processor. Returns true i
 func NewFilteredProcessor(filter Filter, processor EventProcessor) EventProcessor
 ```
 
-Creates a processor that only executes when the filter returns true.
+Creates a processor that only executes when the filter returns true. A nil processor yields a
+processor that does nothing, and a nil filter means "no condition", so the processor runs for every
+event.
 
 **Example:**
 ```go
@@ -527,17 +573,24 @@ BatchProcessor processes multiple events at once.
 
 ```go
 type BatchConfig struct {
-    BatchSize   int           // Max events per batch
-    FlushPeriod time.Duration // Max time to wait before flushing
+    BatchSize   int               // Max events per batch
+    FlushPeriod time.Duration     // Max time to wait before flushing
+    OnError     BatchErrorHandler // Called with the batch and the error when the processor fails
 }
 ```
 
-Configuration for batch processing.
+Configuration for batch processing. A non-positive `BatchSize` falls back to 100; a non-positive
+`FlushPeriod` disables time-based flushing entirely, leaving `Add`, `Flush` and `Shutdown` as the
+only triggers. Leaving `OnError` nil discards processor errors.
+
+```go
+type BatchErrorHandler func(ctx context.Context, events []*Event, err error)
+```
 
 ### NewBatchProcessor
 
 ```go
-func NewBatchProcessor(eventType EventType, config BatchConfig, processor BatchProcessor) *BatchProcessor
+func NewBatchProcessor(eventType EventType, config BatchConfig, processor BatchProcessor) *Batch
 ```
 
 Creates a new batch processor that collects events and processes them in batches.
@@ -547,6 +600,9 @@ Creates a new batch processor that collects events and processes them in batches
 batchConfig := BatchConfig{
     BatchSize:   100,
     FlushPeriod: 5 * time.Second,
+    OnError: func(ctx context.Context, events []*Event, err error) {
+        log.Printf("batch of %d events failed: %v", len(events), err)
+    },
 }
 
 batchProcessor := func(ctx context.Context, events []*Event) error {
@@ -559,7 +615,12 @@ batchProcessor := func(ctx context.Context, events []*Event) error {
 }
 
 processor := NewBatchProcessor(UserCreated, batchConfig, batchProcessor)
-defer processor.Shutdown()
+
+// Order matters: the bus feeds the batch, so drain the bus first
+defer func() {
+    _ = eventBus.Shutdown()
+    processor.Shutdown()
+}()
 
 eventBus.Subscribe(UserCreated, processor.AsEventProcessor())
 ```
@@ -567,34 +628,41 @@ eventBus.Subscribe(UserCreated, processor.AsEventProcessor())
 ### Add
 
 ```go
-func (bp *BatchProcessor) Add(event *Event)
+func (bp *Batch) Add(event *Event) bool
 ```
 
-Adds an event to the batch buffer. If the buffer reaches capacity, it automatically flushes the batch.
+Adds an event to the batch buffer, reporting whether it was buffered. If the buffer reaches capacity,
+it automatically flushes the batch. It returns `false` once the batch has been shut down: nothing is
+left to flush the buffer, so accepting the event would only lose it more quietly.
 
 ### Flush
 
 ```go
-func (bp *BatchProcessor) Flush()
+func (bp *Batch) Flush()
 ```
 
-Processes all buffered events immediately.
+Processes all buffered events immediately. The processor runs in its own goroutine, so this returns
+once the buffer has been handed off, not once the batch has been written.
 
 ### AsEventProcessor
 
 ```go
-func (bp *BatchProcessor) AsEventProcessor() EventProcessor
+func (bp *Batch) AsEventProcessor() EventProcessor
 ```
 
-Returns an EventProcessor that adds events to the batch. This allows the batch processor to be used as a regular event processor.
+Returns an EventProcessor that adds events to the batch. This allows the batch processor to be used
+as a regular event processor. It returns an error if the batch has been shut down, so the bus learns
+that the event went nowhere.
 
 ### Shutdown
 
 ```go
-func (bp *BatchProcessor) Shutdown()
+func (bp *Batch) Shutdown()
 ```
 
-Stops the batch processor and flushes remaining events.
+Stops the batch processor and flushes remaining events. It blocks until the final batch has actually
+been processed and only then cancels the context the processors were given, so that last batch runs
+under a live one. A `BatchProcessor` that never returns will hold up shutdown. It is idempotent.
 
 ## Global Event Bus
 
@@ -612,32 +680,24 @@ globalBus := GetGlobalBus()
 globalBus.Subscribe(UserCreated, myProcessor)
 ```
 
-### Global Publish
+### InitGlobalBus
 
 ```go
-func Publish(event *Event)
+func InitGlobalBus(cfg *Config)
 ```
 
-A convenience function to publish events to the global bus.
+Initializes the global bus with a custom configuration. Like `GetGlobalBus`, it runs only once: call
+it during startup, before anything reaches for the bus, or the defaults win.
 
 **Example:**
 ```go
-event := NewEvent(UserCreated, data)
-Publish(event)
+func main() {
+    bus.InitGlobalBus(&bus.Config{Workers: 20, BufferSize: 5000})
+    defer func() { _ = bus.GetGlobalBus().Shutdown() }()
+}
 ```
 
-### Global Subscribe
-
-```go
-func Subscribe(eventType EventType, processor EventProcessor) string
-```
-
-A convenience function to subscribe to the global bus.
-
-**Example:**
-```go
-subscriptionID := Subscribe(UserCreated, myProcessor)
-```
+There are no package-level `Publish` or `Subscribe` shortcuts; go through `GetGlobalBus()`.
 
 ## Error Handling
 
@@ -654,6 +714,17 @@ Gossip provides standard error types for conditional logic and error handling:
 - `NoDataError` - Missing event data when data was expected
 - `InvalidEventError` - Malformed or invalid events
 - `UnsupportedEventTypeError` - Event types not supported by a processor
+
+Each type has a `New<Type>Error` constructor taking an explicit cause, and a `New<Type>Errorf`
+constructor that formats one. The formatted variants put the text in the `Err` field, which means the
+format string may use `%w` to wrap a cause:
+
+```go
+err := errors.NewRetryableErrorf("connect to db: %w", cause)
+errors.Is(err, cause)      // true
+errors.IsRetryable(err)    // true
+err.Error()                // "retryable error: connect to db: dial tcp: connection refused"
+```
 
 ### Pre-defined Error Constants
 
@@ -719,7 +790,8 @@ The `utils` package provides utilities for safely casting event data with config
 func CastEventData[T any](e *event.Event, opts ...CastOption) (T, error)
 ```
 
-Safely casts the event's `Data` field to type `T`. Returns an error if the type assertion fails or if the data is nil.
+Safely casts the event's `Data` field to type `T`. Returns an error if the event is nil, if the type
+assertion fails, or if the data is nil.
 
 **Options:**
 
@@ -737,11 +809,10 @@ A function that returns true if the given value is considered nil. Used to detec
 
 ## Performance Recommendations
 
-1. **Use Memory Provider** for single-application, high-throughput scenarios
-2. **Use Redis Provider** for distributed systems where events need to cross process boundaries
-3. **Batch Processing** is highly recommended for high-volume scenarios (1000+ events/second)
-4. **Event Filtering** has minimal overhead and can reduce unnecessary processing
-5. **Middleware** adds minimal overhead except for timeout middleware which requires goroutine management
+1. **Tune `Workers` and `BufferSize`** to your workload; the bus is in-process, so events never leave the binary
+2. **Batch Processing** is highly recommended for high-volume scenarios (1000+ events/second)
+3. **Event Filtering** has minimal overhead and can reduce unnecessary processing
+4. **Middleware** adds minimal overhead except for timeout middleware, which starts a goroutine per event
 
 ## Next Steps
 

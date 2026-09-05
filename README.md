@@ -13,9 +13,12 @@ Gossip is a lightweight, type-safe event bus library for Go that implements the 
 - **📦 Batch processing** - Process multiple events efficiently
 - **🔄 Bulk subscription** - Subscribe to multiple event types with a single processor
 - **🔧 Middleware support** - Retry, timeout, logging, recovery
-- **🎚️ Priority queues** - Handle critical events first
 - **🛡️ Thread-safe** - Concurrent publish/subscribe operations
-- **🧹 Graceful shutdown** - Wait for in-flight events
+- **🧹 Graceful shutdown** - Drains the backlog, so accepted events are not dropped on the way out
+
+Gossip is **in-process**: `Publish` puts the event on a Go channel and a worker goroutine picks it up.
+There is no broker and no network hop. It is a way to structure one application around events, not a
+replacement for Kafka, NATS or Redis Pub/Sub.
 
 ## 📦 Installation
 
@@ -48,9 +51,13 @@ type UserData struct {
 }
 
 func main() {
-	// Initialize event bus
+	// Initialize event bus. Shutdown drains everything the bus accepted before it returns.
 	eventBus := bus.NewEventBus(bus.DefaultConfig())
-	defer eventBus.Shutdown()
+	defer func() {
+		if err := eventBus.Shutdown(); err != nil {
+			log.Printf("event bus shutdown did not finish cleanly: %v", err)
+		}
+	}()
 
 	// Subscribe processor
 	eventBus.Subscribe(UserCreated, func(ctx context.Context, eventToPub *event.Event) error {
@@ -64,7 +71,9 @@ func main() {
 		UserID:   "123",
 		Username: "alice",
 	})
-	eventBus.Publish(evnt)
+	if !eventBus.Publish(evnt) {
+		log.Printf("event bus rejected the %s event", UserCreated)
+	}
 }
 ```
 
@@ -158,6 +167,16 @@ func handleSpecificError(err error) {
 - `InvalidEventError` - Malformed or invalid events
 - `UnsupportedEventTypeError` - Event types not supported by a processor
 
+Each type has a `New<Type>Error` constructor taking an explicit cause and a `New<Type>Errorf` that
+formats one. The formatted variants put the text in the `Err` field, so the format string may use
+`%w` to wrap a cause:
+
+```go
+err := errors.NewRetryableErrorf("connect to db: %w", cause)
+errors.Is(err, cause)   // true
+errors.IsRetryable(err) // true
+```
+
 ### Pre-defined Error Constants
 
 - `errors.ErrNilData` - Pre-defined nil data error (similar to redis.Nil)
@@ -177,19 +196,23 @@ func handleSpecificError(err error) {
 The event bus handles publishing and subscribing to events:
 
 ```go
-// Initialize with custom config
+// Initialize with custom config. Any field left at zero falls back to its default:
+// 10 workers, a buffer of 1000, and a 5 second shutdown timeout.
 config := &bus.Config{
-    Workers:    20,     // Number of worker goroutines
-    BufferSize: 2000,   // Event channel buffer size
+    Workers:         20,              // Number of worker goroutines
+    BufferSize:      2000,            // Event channel buffer size
+    ShutdownTimeout: 5 * time.Second, // How long Shutdown waits for the backlog to drain
 }
 eventBus := bus.NewEventBus(config)
-defer eventBus.Shutdown()
+defer func() { _ = eventBus.Shutdown() }()
 
-// Subscribe to events
-eventBus.Subscribe(UserCreated, myProcessor)
+// Subscribe to events (keep the ID if you will ever unsubscribe)
+subscriptionID := eventBus.Subscribe(UserCreated, myProcessor)
 
-// Publish events (async)
-eventBus.Publish(event)
+// Publish events (async) - false means the event was dropped
+if !eventBus.Publish(event) {
+    log.Printf("event bus rejected the %s event", UserCreated)
+}
 
 // Publish events (sync - waits for all processors to complete)
 errors := eventBus.PublishSync(ctx, event)
@@ -226,16 +249,20 @@ Chain behaviors around processors:
 ```go
 import "github.com/seyallius/gossip/v2/event/middleware"
 
-// Chain multiple middleware
+// Chain multiple middleware. Order is outermost-first, so WithRecovery goes last: it turns a panic
+// into an error, and everything wrapped around it gets to see that error.
 processor := middleware.Chain(
     middleware.WithRetry(3, 100*time.Millisecond),
     middleware.WithTimeout(5*time.Second),
-    middleware.WithLogging("processing event", log.Println),
+    middleware.WithLogging("processing event", func(message string) { log.Println(message) }),
     middleware.WithRecovery(),
 )(myProcessor)
 
 eventBus.Subscribe(UserCreated, processor)
 ```
+
+`WithRecovery` is not optional insurance: a processor that panics takes down the worker goroutine, and
+with it the process. The bus does not recover on your behalf.
 
 ### 4. Batch Processing
 
@@ -257,14 +284,25 @@ batchProcessor := func(ctx context.Context, events []*event.Event) error {
 
 // Configure batch processing
 batchConfig := batch.BatchConfig{
-    BatchSize:   100,              // Process in groups of 100
-    FlushPeriod: 5 * time.Second,  // Flush every 5 seconds if not full
+    BatchSize:   100,             // Process in groups of 100
+    FlushPeriod: 5 * time.Second, // Flush every 5 seconds if not full; 0 disables time-based flushing
+    OnError: func(ctx context.Context, events []*event.Event, err error) {
+        log.Printf("batch of %d events failed: %v", len(events), err)
+    },
 }
 
 // Create batch processor
 processor := batch.NewBatchProcessor(UserCreated, batchConfig, batchProcessor)
 eventBus.Subscribe(UserCreated, processor.AsEventProcessor())
+
+// Order matters on the way out: the bus feeds the batch, so drain the bus first
+defer func() {
+    _ = eventBus.Shutdown()
+    processor.Shutdown()
+}()
 ```
+
+Without `OnError`, a failing `BatchProcessor` is silent -- the batch is gone and nothing is told.
 
 ### 5. Safe Type Casting
 Safely cast event data with configurable nil-checking strategies to avoid the infamous "typed nil" panic trap:
@@ -344,7 +382,7 @@ defer eventBus.UnsubscribeMultiple(subscriptionIDs)
 
 ## ⚡ Performance
 
-Gossip is designed for high-performance event processing with different performance characteristics depending on the provider used. You can view the complete benchmark tests in these files:
+Gossip is designed for high-performance event processing. You can view the complete benchmark tests in these files:
 
 - [event/bus/event_bus_benchmark_test.go](./event/bus/event_bus_benchmark_test.go) - Core EventBus benchmarks
 - [event/batch/batch_benchmark_test.go](./event/batch/batch_benchmark_test.go) - Batch processing benchmarks
@@ -354,136 +392,55 @@ Gossip is designed for high-performance event processing with different performa
 - [event/middleware/middleware_benchmark_test.go](./event/middleware/middleware_benchmark_test.go) - Middleware benchmarks
 - [event/middleware/middleware_consolidated_benchmark_test.go](./event/middleware/middleware_consolidated_benchmark_test.go) - Table-driven middleware benchmarks
 
-### Provider Performance Comparison
+### Where the Time Goes
 
-**Memory Provider (Default)**
-- Publish: ~168ns per event (0-2 allocations)
-- Subscribe: ~350ns per subscription (128-136 bytes allocated)
-- New EventBus: ~50ms (includes worker initialization)
+Publishing is a non-blocking send on a buffered channel, so it costs a channel operation and nothing
+else -- no serialization, no network, no allocation in the common path. The work happens on the worker
+goroutines, where the cost is whatever your processors do.
 
-**Redis Provider**
-- Publish: ~65µs per event (416-440 bytes allocated)
-- Subscribe: ~400-500µs per subscription (77KB+ allocated)
-- New EventBus: ~14ms (network connection setup)
+The parts of the library that do allocate:
 
-### Why the Performance Differences?
-
-**Memory Provider is faster because:**
-- Events are passed directly through Go channels within the same process
-- No serialization/deserialization overhead
-- No network latency
-- Direct function calls for event processing
-- Minimal memory allocations (only for subscription management)
-
-**Redis Provider is slower because:**
-- Events must be serialized to JSON and sent over the network
-- Network round-trip time for each operation
-- Redis Pub/Sub infrastructure overhead
-- Deserialization when receiving events
-- More complex subscription management with goroutines for each subscription
-
-### Allocation Differences
-
-The Redis provider has significantly higher allocations because:
-- JSON marshaling/unmarshaling requires temporary objects
-- Redis client connection management
-- Goroutines for handling Redis subscriptions
-- Buffer management for network operations
-
-### When to Choose Each Provider?
-
-**Choose Memory Provider when:**
-- All event processors run in the same application/process
-- Maximum performance and throughput are critical
-- Single-application architecture
-- No need for persistence across application restarts
-
-**Choose Redis Provider when:**
-- Events need to cross process/application boundaries
-- Multiple services need to share events
-- You need persistence of events across application restarts
-- Distributed system architecture
-- You want to leverage Redis clustering for scalability
+- **Subscribing** allocates the `Subscription` and, when the slice grows, a new backing array.
+- **Unsubscribing** allocates a fresh slice, because dispatch iterates without holding the lock and
+  shifting elements down under it would be a data race. It is the rare operation, deliberately paying
+  so the frequent one does not.
+- **`WithTimeout`** starts a goroutine and a channel per event. It is the one middleware with a real
+  per-event cost.
+- **Filters, `WithRetry` on the success path, and `WithLogging`** are function calls.
 
 ### Benchmark Results
 
-**Publish Performance (Memory Provider):**
+Measured on an Intel Core Ultra 7 265K, `go test -bench=. -benchmem ./event/...`. Treat these as
+orders of magnitude, not promises:
+
 ```
-BenchmarkEventBus_PublishAsync_NoProcessors    6.7M ± 0%    168ns/op    1 B/op    0 allocs/op
-BenchmarkEventBus_Publish/Memory_Nil         6.4M ± 0%    175ns/op    2 B/op    0 allocs/op
-BenchmarkEventBus_Publish/Memory_Small       6.6M ± 0%    187ns/op    0 B/op    0 allocs/op
-BenchmarkEventBus_Publish/Memory_Medium      6.2M ± 0%    177ns/op    2 B/op    0 allocs/op
-BenchmarkEventBus_Publish/Memory_Large       6.5M ± 0%    185ns/op    1 B/op    0 allocs/op
+BenchmarkEventBus_PublishAsync_NoProcessors-20      133.9 ns/op      0 B/op    0 allocs/op
+BenchmarkEventBus_Subscribe-20                      215.7 ns/op    137 B/op    3 allocs/op
+BenchmarkBatchProcessor_Add-20                       23.3 ns/op      8 B/op    0 allocs/op
+BenchmarkFilterByMetadata-20                         29.8 ns/op      0 B/op    0 allocs/op
+BenchmarkWithTimeout-20                             1427   ns/op    560 B/op    8 allocs/op
 ```
 
-**Publish Performance (Redis Provider):**
-```
-BenchmarkEventBus_Publish/Redis_Nil          21.7K ± 0%  55.5µs/op  416 B/op   9 allocs/op
-BenchmarkEventBus_Publish/Redis_Small        20.6K ± 0%  57.4µs/op  416 B/op   9 allocs/op
-BenchmarkEventBus_Publish/Redis_Medium       20.4K ± 0%  59.1µs/op  677 B/op  16 allocs/op
-BenchmarkEventBus_Publish/Redis_Large        15.8K ± 0%  90.5µs/op  6.5KB/op 10 allocs/op
-```
-
-**Subscribe Performance:**
-```
-BenchmarkEventBus_Subscribe/Memory           3.3M ± 0%   355ns/op   129 B/op   3 allocs/op
-BenchmarkEventBus_Subscribe/Redis            2.8K ± 0% 404µs/op  77.8KB/op 249 allocs/op
-```
-
-**Contentious Operations:**
-```
-BenchmarkEventBus_PublishAsync_WithContention/Memory    4.2M ± 0%   353ns/op   75 B/op   1 allocs/op
-BenchmarkEventBus_PublishAsync_WithContention/Redis     7.4K ± 0% 227µs/op 41.4KB/op 912 allocs/op
-```
-
-**Batch Processing:**
-```
-BenchmarkBatchProcessor_Add                 50M ± 0%    26.1ns/op    8 B/op    0 allocs/op
-BenchmarkBatchProcessor_Flush             144K ± 0%  9.76µs/op 6.1KB/op 102 allocs/op
-```
-
-**Filter Performance:**
-```
-BenchmarkFilterByMetadata                   93M ± 0%    13.0ns/op    0 B/op    0 allocs/op
-BenchmarkAndFilter                        26M ± 0%    45.4ns/op    0 B/op    0 allocs/op
-```
-
-**Middleware Overhead:**
-```
-BenchmarkWithRetry                        1.0G ± 0%   0.26ns/op     0 B/op    0 allocs/op
-BenchmarkWithTimeout                      866K ± 0%  1.21µs/op   560 B/op    8 allocs/op
-```
-
-**Configuration Performance:**
-```
-BenchmarkConfig_Creation/Default          29M ± 0%    39.2ns/op   80 B/op    1 allocs/op
-BenchmarkConfig_Creation/Custom           27M ± 0%    44.5ns/op   80 B/op    1 allocs/op
-```
+The shape to notice: publishing and filtering allocate nothing, subscribing allocates a little, and
+`WithTimeout` is an order of magnitude more expensive than everything else because it starts a
+goroutine and a channel for every event.
 
 ### Performance Recommendations
 
-1. **Use Memory Provider** for single-application, high-throughput scenarios
-2. **Use Redis Provider** for distributed systems where events need to cross process boundaries
-3. **Batch Processing** is highly recommended for high-volume scenarios (1000+ events/second)
-4. **Event Filtering** has minimal overhead and can reduce unnecessary processing
-5. **Middleware** adds minimal overhead except for timeout middleware which requires goroutine management
-
-### Future Performance Improvements
-
-We're continuously working on performance optimizations:
-
-- **Zero-allocation publishing** - Working on reducing allocations for high-frequency scenarios
-- **Connection pooling** - For Redis provider to reduce connection overhead
-- **Message compression** - For Redis provider to reduce network payload size
-- **Async Redis operations** - Optimizing Redis operations for better throughput
-- **Subscription optimization** - Reducing memory footprint for large numbers of subscriptions
+1. **Tune `Workers` and `BufferSize`** to your workload -- workers for how much runs in parallel, buffer for how large a burst you can absorb before `Publish` starts reporting drops
+2. **Batch Processing** is highly recommended for high-volume scenarios (1000+ events/second)
+3. **Event Filtering** has minimal overhead and can reduce unnecessary processing
+4. **Middleware** adds minimal overhead except for timeout middleware, which starts a goroutine per event
 
 ## 🧪 Testing
+
+Synchronise on `Shutdown()`, not on a sleep. It drains everything the bus has accepted and returns
+when the workers are done, so the assertion is exact and there is no timing to tune:
 
 ```go
 func TestMyProcessor(t *testing.T) {
     eventBus := bus.NewEventBus(bus.DefaultConfig())
-    defer eventBus.Shutdown()
+    defer eventBus.Shutdown() // idempotent, so this is just a safety net
 
     received := false
     processor := func(ctx context.Context, event *event.Event) error {
@@ -492,27 +449,12 @@ func TestMyProcessor(t *testing.T) {
     }
 
     eventBus.Subscribe(UserCreated, processor)
-    eventBus.Publish(event.NewEvent(UserCreated, nil))
+    require.True(t, eventBus.Publish(event.NewEvent(UserCreated, nil)))
 
-    time.Sleep(100 * time.Millisecond)
+    require.NoError(t, eventBus.Shutdown())
     assert.True(t, received)
 }
 ```
-
-## 🚀 Performance Report
-
-The gossip event library is extremely lightweight and will have **minimal impact** on your application's performance:
-
-- **Publishing Events**: Asynchronous publishing is extremely fast (~140ns) with zero memory allocations when there are no subscribers, and remains efficient (~70-90ns) even with multiple concurrent publishers and subscribers.
-- **Subscribing to Events**: Subscription is efficient at ~220ns per operation with minimal memory allocation (120 bytes).
-- **Memory Usage**: Most core operations have **zero memory allocations**. The event bus has a configurable buffer size (defaults to 1000 events).
-- **Scalability**: The event bus can handle high-concurrency scenarios effectively with multiple worker goroutines processing events in parallel.
-
-For detailed benchmark results, see:
-- [Middleware Benchmarks](./event/middleware/middleware_benchmark_test.go)
-- [Filter Benchmarks](./event/filter/filter_benchmark_test.go) 
-- [Event Bus Benchmarks](./event/bus/event_bus_benchmark_test.go)
-- [Batch Processor Benchmarks](./event/batch/batch_benchmark_test.go)
 
 ## 🎯 Best Practices
 
@@ -535,6 +477,12 @@ For detailed benchmark results, see:
 - Adjust `Workers` based on event volume
 - Set `BufferSize` based on peak load expectations
 - Use batch processing for high-volume scenarios
+
+### 5. Check What the API Tells You
+- `Publish` returns `false` when the event was dropped -- a full buffer or a bus shutting down
+- `Shutdown` returns an error when the backlog outran `ShutdownTimeout`
+- `BatchConfig.OnError` is the only way to learn that a batch failed
+- Wrap processors in `middleware.WithRecovery()`; an unrecovered panic takes down the process
 
 ## 📚 Documentation
 

@@ -29,9 +29,8 @@ The implementation provides:
 - Event filtering capabilities
 - Batch processing features
 - Middleware support
-- Priority queues
 - Thread-safe operations
-- Graceful shutdown
+- Graceful shutdown that drains the backlog
 
 ## Why Does This Even Exist?
 
@@ -82,7 +81,7 @@ The core of Gossip is built around several key components:
 
 1. **EventBus** - The main coordinator that manages subscriptions and event dispatch
 2. **Event** - The data structure that carries information through the system
-3. **Eventprocessor** - Functions that process events
+3. **EventProcessor** - Functions that process events
 4. **Worker Pool** - Goroutines that handle asynchronous event processing
 5. **Middleware** - Pluggable functionality that wraps processors
 6. **Filters** - Conditional execution of processors based on event properties
@@ -90,25 +89,30 @@ The core of Gossip is built around several key components:
 ### Core Data Types
 
 ```go
-// Eventprocessor is a function that processes events.
-type Eventprocessor func(ctx context.Context, event *Event) error
+// EventProcessor is a function that processes events.
+type EventProcessor func(ctx context.Context, event *Event) error
 
 // Subscription represents a registered event processor.
 type Subscription struct {
-    ID      string
-    Type    EventType
-    processor Eventprocessor
+    Id         string
+    Type       EventType
+    EProcessor EventProcessor
 }
 
 // EventBus manages event publishing and subscription.
 type EventBus struct {
-    mu            sync.RWMutex
-    subscriptions map[EventType][]*Subscription
-    workers       int
-    eventChan     chan *Event
-    ctx           context.Context
-    cancel        context.CancelFunc
-    wg            sync.WaitGroup
+    subscriptions   map[EventType][]*Subscription
+    eventChan       chan *Event
+    workers         int
+    shutdownTimeout time.Duration
+    subscriptionSeq atomic.Uint64 // monotonic counter behind every subscription ID
+    ctx             context.Context
+    cancel          context.CancelFunc
+    mu              sync.RWMutex
+    closed          bool      // guarded by mu; true once Shutdown closed eventChan
+    shutdownOnce    sync.Once // makes Shutdown idempotent
+    shutdownErr     error
+    wg              sync.WaitGroup
 }
 ```
 
@@ -318,25 +322,32 @@ These serve as examples and can be extended based on application needs.
 ```go
 // Config holds configuration for the event bus.
 type Config struct {
-    Workers    int // Number of worker goroutines
-    BufferSize int // Size of the event channel buffer
+    Workers         int           // Number of worker goroutines
+    BufferSize      int           // Size of the event channel buffer
+    ShutdownTimeout time.Duration // How long Shutdown waits for buffered events to drain
 }
 
 // DefaultConfig returns sensible default configuration.
 func DefaultConfig() *Config {
     return &Config{
-        Workers:    10,
-        BufferSize: 1000,
+        Workers:         10,
+        BufferSize:      1000,
+        ShutdownTimeout: 5 * time.Second,
     }
 }
 ```
 
 The configuration allows users to tune the event bus performance based on their workload characteristics. More workers can process events in parallel, while a larger buffer can handle bursty event loads.
 
-### Eventprocessor - What's a processor?
+`NewEventBus` replaces any field left at zero or below with its default, rather than honouring it.
+None of those values describes a working bus: zero workers accepts events and never processes them,
+and a zero buffer makes the channel unbuffered, which turns `Publish`'s non-blocking send into a drop
+whenever no worker happens to be parked on the receive.
+
+### EventProcessor - What's a processor?
 
 ```go
-type Eventprocessor func(ctx context.Context, event *Event) error
+type EventProcessor func(ctx context.Context, event *Event) error
 ```
 
 A processor is just a function that:
@@ -384,48 +395,57 @@ Note that the event channel is buffered with `cfg.BufferSize`. This allows for n
 
 ```go
 // Subscribe registers a processor for a specific event type and returns a subscription ID.
-func (eb *EventBus) Subscribe(eventType EventType, processor Eventprocessor) string {
+func (eb *EventBus) Subscribe(eventType EventType, processor EventProcessor) string {
     eb.mu.Lock()
     defer eb.mu.Unlock()
 
-    subscriptionID := fmt.Sprintf("%s-%d", eventType, len(eb.subscriptions[eventType]))
-
     sub := &Subscription{
-        ID:      subscriptionID,
-        Type:    eventType,
-        processor: processor,
+        Id:         fmt.Sprintf("%s-%d", eventType, eb.subscriptionSeq.Add(1)),
+        Type:       eventType,
+        EProcessor: processor,
     }
 
     eb.subscriptions[eventType] = append(eb.subscriptions[eventType], sub)
 
-    return subscriptionID
+    return sub.Id
 }
 ```
 
-The subscription ID is generated using the event type and the current count of processors for that type. This provides a unique but predictable ID for each subscription. The mutex lock ensures thread safety when modifying the subscription map.
+The subscription ID is the event type plus a **monotonic per-bus counter**, giving IDs like
+`user.created-1`, `user.created-2`. The mutex lock ensures thread safety when modifying the
+subscription map.
 
 **Step by step:**
 1. **Lock** the subscriptions map (exclusive write access)
-2. Generate a unique ID (like `user.created-0`, `user.created-1`)
+2. Generate a unique ID
 3. Create a `Subscription` wrapper (ID + processor)
 4. Append to the slice for this event type
 5. Return the ID (so you can unsubscribe later)
+
+**Why does uniqueness matter?** Because `Unsubscribe` removes the **first** subscription whose ID
+matches. If two can share an ID, unsubscribing one silently removes the other, and the handler you
+meant to remove stays live. Deriving the ID from the current length has exactly that problem: remove
+`user.created-0` and the next subscriber is handed that ID again.
 
 **Why defer unlock?** In case something panics, the lock is always released. Otherwise, you'd deadlock the entire bus.
 
 ```go
 // Unsubscribe removes a subscription by ID.
-func (eb *EventBus) Unsubscribe(subscriptionID string) bool {
+func (eb *EventBus) Unsubscribe(subscriptionId string) bool {
     eb.mu.Lock()
     defer eb.mu.Unlock()
 
-    for eventType, subs := range eb.subscriptions {
-        for i, sub := range subs {
-            if sub.ID == subscriptionID {
-                // Unsubscribed processor
-                eb.subscriptions[eventType] = append(subs[:i], subs[i+1:]...)
-                return true
+    for eventType, subscriptions := range eb.subscriptions {
+        for i, subscription := range subscriptions {
+            if subscription.Id != subscriptionId {
+                continue
             }
+            if remaining := removeSubscriptionAt(subscriptions, i); len(remaining) > 0 {
+                eb.subscriptions[eventType] = remaining
+            } else {
+                delete(eb.subscriptions, eventType) // don't leak empty map keys
+            }
+            return true
         }
     }
 
@@ -435,37 +455,52 @@ func (eb *EventBus) Unsubscribe(subscriptionID string) bool {
 
 The unsubscribe operation iterates through all subscription lists to find and remove the matching subscription. This is O(n) complexity but is acceptable since unsubscription typically happens infrequently.
 
+Note that it builds a **new slice** rather than doing the obvious
+`append(subscriptions[:i], subscriptions[i+1:]...)`. That expression shifts elements down inside the
+existing backing array, and `dispatch` walks that same array after releasing the read lock -- a data
+race the detector flags. Adding needs no such care: an `append` either writes at index `len`, which
+no in-flight reader can observe, or allocates a new array outright.
+
 ### Event Publishing
 
 #### Asynchronous Publishing
 
 ```go
 // Publish sends an event to all registered processors asynchronously.
-func (eb *EventBus) Publish(event *Event) {
+func (eb *EventBus) Publish(event *Event) bool {
+    if event == nil {
+        return false
+    }
+
+    eb.mu.RLock()
+    defer eb.mu.RUnlock()
+
+    if eb.closed {
+        return false
+    }
+
     select {
     case eb.eventChan <- event:
-
-    case <-eb.ctx.Done():
-
-    default:
-        // Event channel full, dropping event
+        return true
+    default: // buffer full - drop the event and tell the caller
+        return false
     }
 }
 ```
 
-The publish operation uses a non-blocking select statement that has three cases:
-1. Successful send to the event channel (most common case)
-2. Context cancellation (the event bus is shutting down)
-3. Default case where the channel buffer is full (event gets dropped)
+The publish operation uses a non-blocking select, so it never blocks the caller, and returns whether
+the bus accepted the event.
 
-This approach prevents blocking the caller when the event channel is full, which is important for maintaining system responsiveness.
-
-**The `select` statement:**
-- **First case**: Try to push event into the channel. If there's space, it succeeds immediately (non-blocking).
-- **Second case**: If the bus is shutting down, don't accept new events.
-- **Default case**: If the channel is full (buffer exhausted), drop the event with a warning.
+**Why the read lock around the send?** Because `Shutdown` closes `eventChan`, and sending on a closed
+channel is a **panic**, not an error. Checking a flag and then sending is not enough on its own -- the
+close can land in between. `Shutdown` takes the write lock before closing, so holding the read lock
+across both the check and the send is what makes them mutually exclusive.
 
 **Why drop instead of block?** Because blocking the publisher could freeze your entire app. It's better to lose an event than hang the system. (You can adjust `BufferSize` to prevent this.)
+
+**Why return a bool?** Because a dropped event nobody hears about is indistinguishable from one that
+was processed. Only the caller knows whether this particular event is worth a retry, a log line, a
+metric, or a fall back to `PublishSync`.
 
 #### Synchronous Publishing
 
@@ -480,11 +515,11 @@ func (eb *EventBus) PublishSync(ctx context.Context, event *Event) []error {
         return nil
     }
 
-    errors := make([]error, 0)
+    var errors []error
 
     for _, sub := range processors {
-        if err := sub.processor(ctx, event); err != nil {
-            errors = append(errors, fmt.Errorf("processor %s: %w", sub.ID, err))
+        if err := sub.EProcessor(ctx, event); err != nil {
+            errors = append(errors, fmt.Errorf("handler %s: %w", sub.Id, err))
         }
     }
 
@@ -524,62 +559,57 @@ The start method creates the configured number of worker goroutines. Each worker
 func (eb *EventBus) worker() {
     defer eb.wg.Done()
 
-    for {
-        select {
-        case event, ok := <-eb.eventChan:
-            if !ok {
-                return // Worker stopped
-            }
-            eb.dispatch(event)
-
-        case <-eb.ctx.Done():
-            return // Worker shutting down
-        }
+    for event := range eb.eventChan {
+        _ = eb.dispatch(eb.ctx, event)
     }
 }
 ```
 
-Each worker runs an infinite loop that selects from two channels:
-1. The event channel - when an event arrives, it gets dispatched
-2. The cancellation context - when cancelled, the worker exits
+Each worker ranges over the event channel. `range` ends when the channel is closed **and drained**,
+which is exactly the shutdown behaviour we want.
 
-The `ok` check is important to detect when the event channel is closed during shutdown.
-
-**The infinite loop:**
-- **Wait** for an event from the channel
-- **Or** wait for a shutdown signal
-- If event arrives, dispatch it to processors
-- If shutdown signal, exit gracefully
-
-**Why `ok` check?** When a channel is closed, receivers get `ok == false`. This tells the worker to stop.
+**Why not also select on `ctx.Done()`?** That is the obvious shape, and it quietly throws away the
+backlog. `select` picks a ready case at random, so once the context is cancelled a worker with a
+hundred buffered events is as likely to exit as to process the next one -- and everything the bus had
+already accepted and acknowledged to its publishers evaporates. Closing the channel says "no more
+events are coming"; the workers finish what is in it and exit on their own.
 
 #### dispatch() - Running processors
 
 ```go
 // dispatch sends an event to all registered processors.
-func (eb *EventBus) dispatch(event *Event) {
+func (eb *EventBus) dispatch(ctx context.Context, event *Event) []error {
     eb.mu.RLock()
-    processors := eb.subscriptions[event.Type]
+    subscriptions := eb.subscriptions[event.Type]
     eb.mu.RUnlock()
 
-    if len(processors) == 0 {
-        return
+    var pubErrs []error
+    for _, subscription := range subscriptions {
+        if subscription.EProcessor == nil {
+            continue
+        }
+        if err := subscription.EProcessor(ctx, event); err != nil {
+            pubErrs = append(pubErrs, fmt.Errorf("handler %s: %w", subscription.Id, err))
+        }
     }
 
-    for _, sub := range processors {
-        _ = sub.processor(eb.ctx, event)
-    }
+    return pubErrs
 }
 ```
 
-The dispatch method gets a read lock to access the processors (avoiding blocking while processing), then calls each processor. Errors are ignored in asynchronous dispatch (though they could be logged in a production system).
+The dispatch method takes the read lock only long enough to read the slice header, then runs each
+processor and **collects** their errors rather than swallowing them. `PublishSync` returns that slice
+to its caller; a worker discards it.
 
 **Step by step:**
 1. Look up processors for this event type
-2. Run each processor
-3. If a processor fails, log the error but **don't stop** other processors
+2. Run each in turn; a failure is collected and the rest still run
+3. Return every error, tagged with the subscription that produced it
 
 **Why not stop on error?** Because processors are independent. If the email processor fails, the audit processor should still run.
+
+**Why collect instead of log?** Because a library that logs on your behalf gives you one hard-coded
+destination and no way to react. Compose `middleware.WithLogging` with a destination of your choice.
 
 
 
@@ -587,38 +617,55 @@ The dispatch method gets a read lock to access the processors (avoiding blocking
 
 ```go
 // Shutdown gracefully stops the event bus and waits for all workers to finish.
-func (eb *EventBus) Shutdown() {
-    eb.cancel()
-    close(eb.eventChan)
-    eb.wg.Wait()
+func (eb *EventBus) Shutdown() error {
+    eb.shutdownOnce.Do(func() {
+        eb.mu.Lock()
+        eb.closed = true
+        close(eb.eventChan) // workers drain what is left, then their range loops end
+        eb.mu.Unlock()
+
+        drained := make(chan struct{})
+        go func() {
+            eb.wg.Wait()
+            close(drained)
+        }()
+
+        select {
+        case <-drained:
+        case <-time.After(eb.shutdownTimeout):
+            eb.shutdownErr = goserr.NewTimeoutErrorf(eb.shutdownTimeout.String(),
+                "event bus shutdown timed out with events still in flight")
+        }
+
+        eb.cancel() // cancelled last: nothing runs under this context any more
+    })
+    return eb.shutdownErr
 }
 ```
 
 The shutdown process:
-1. Cancels the context, which signals all workers to stop
-2. Closes the event channel, which allows workers to detect shutdown and return
-3. Waits for all workers to finish using the wait group
+1. Marks the bus closed and closes the event channel, under the write lock
+2. Waits for the workers to drain the backlog and exit
+3. Gives up after `ShutdownTimeout` and reports it, rather than hanging forever
+4. Cancels the context the processors were given
 
-This ensures all in-flight events are processed before the event bus exits.
+**Order matters, and it is the opposite of the intuitive one:**
 
-```go
-func (eb *EventBus) Shutdown() {
-    log.Println("Shutting down...")
-    
-    eb.cancel()           // ← Signal workers to stop
-    close(eb.eventChan)   // ← Close the channel
-    eb.wg.Wait()          // ← Wait for all workers to finish
-    
-    log.Println("Shutdown complete")
-}
-```
+- **Close the channel first, under the write lock.** This is the stop signal, and doing it under the
+  lock is what stops a concurrent `Publish` from sending on a closed channel and panicking.
+- **Then wait.** The workers are ranging over the channel, so they finish the buffer and exit on
+  their own. Every event the bus accepted is delivered.
+- **Cancel the context last.** It is what processors are handed. Cancelling it first aborts the very
+  events this drain exists to save -- every context-aware write in that final batch fails instantly.
 
-**Order matters:**
-1. **Cancel context**: Workers stop pulling new events
-2. **Close channel**: Workers process remaining events in the buffer, then exit
-3. **Wait**: Block until all workers finish
+**Why the timeout?** Because "waiting for the workers" and "one processor is wedged on a dead socket"
+look identical from here. Five seconds by default, then the context is cancelled so context-aware
+processors unwind, and the caller is told the drain did not finish.
 
-This ensures **no event is lost** and **no goroutine leak**.
+**Why `sync.Once`?** Two independent defers on one bus is an ordinary thing to write, and closing an
+already-closed channel is a panic. Later callers get the first call's result.
+
+This gives you **no accepted event lost**, **no goroutine leak**, and **no panic on the way out**.
 
 ## Concurrency Model
 
@@ -652,8 +699,8 @@ Thread safety is achieved through:
 The middleware system provides a way to add cross-cutting concerns to event processors:
 
 ```go
-// Middleware wraps an Eventprocessor with additional behavior.
-type Middleware func(Eventprocessor) Eventprocessor
+// Middleware wraps an EventProcessor with additional behavior.
+type Middleware func(EventProcessor) EventProcessor
 ```
 
 This functional approach allows for composable behavior around processors.
@@ -667,7 +714,7 @@ A middleware takes a processor and returns a **new processor** that does somethi
 ```go
 // WithRetry retries failed processors with exponential backoff.
 func WithRetry(maxRetries int, initialDelay time.Duration) Middleware {
-    return func(next Eventprocessor) Eventprocessor {
+    return func(next EventProcessor) EventProcessor {
         return func(ctx context.Context, event *Event) error {
             var err error
             delay := initialDelay
@@ -716,12 +763,15 @@ bus.Subscribe(UserCreated, processor)
 ```go
 // WithTimeout adds a timeout to processor execution.
 func WithTimeout(timeout time.Duration) Middleware {
-    return func(next Eventprocessor) Eventprocessor {
+    if timeout <= 0 {
+        return func(next EventProcessor) EventProcessor { return next }
+    }
+    return func(next EventProcessor) EventProcessor {
         return func(ctx context.Context, event *Event) error {
             ctx, cancel := context.WithTimeout(ctx, timeout)
             defer cancel()
 
-            done := make(chan error, 1)
+            done := make(chan error, 1) // buffered so the processor's goroutine can always exit
             go func() {
                 done <- next(ctx, event)
             }()
@@ -731,6 +781,10 @@ func WithTimeout(timeout time.Duration) Middleware {
                 return err
 
             case <-ctx.Done():
+                if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+                    return goserr.NewTimeoutError(timeout.String(), ctx.Err(),
+                        fmt.Sprintf("processor for %s did not finish in time", event.Type))
+                }
                 return ctx.Err()
             }
         }
@@ -743,20 +797,36 @@ The timeout middleware creates a new context with a timeout and runs the process
 **Why a goroutine and channel?**
 - Run the processor in a separate goroutine
 - Wait for either the processor to finish OR the timeout
-- If timeout hits first, return `context.DeadlineExceeded`
+- If timeout hits first, report a `TimeoutError` wrapping `context.DeadlineExceeded`, so both
+  `goserr.IsTimeout(err)` and `errors.Is(err, context.DeadlineExceeded)` recognise it
+
+**Why the guard on a non-positive timeout?** `context.WithTimeout(ctx, 0)` returns an
+already-expired context, so every event would fail instantly while its processor kept running,
+detached, in a goroutine nothing waits on. A non-positive duration means no timeout.
+
+**What this does not do:** the deadline bounds how long the *middleware* waits, not the processor.
+A processor that ignores `ctx` keeps running after the timeout has been reported. The buffered
+`done` channel is what stops that goroutine leaking when nobody is left to receive from it.
 
 ### Recovery Middleware
 
 ```go
-// WithRecovery recovers from panics in processors.
+// WithRecovery recovers from panics in processors and reports them as errors.
 func WithRecovery() Middleware {
-    return func(next Eventprocessor) Eventprocessor {
+    return func(next EventProcessor) EventProcessor {
         return func(ctx context.Context, event *Event) (err error) {
             defer func() {
-                if r := recover(); r != nil {
-                    log.Printf("[Middleware] Recovered from panic in processor for event %s: %v", event.Type, r)
-                    err = nil
+                r := recover()
+                if r == nil {
+                    return
                 }
+                log.Printf("[Middleware] Recovered from panic in handler for event %s: %v\n%s", event.Type, r, debug.Stack())
+
+                cause, ok := r.(error)
+                if !ok {
+                    cause = fmt.Errorf("%v", r)
+                }
+                err = goserr.NewProcessingError(cause, fmt.Sprintf("recovered from panic in handler for event %s", event.Type))
             }()
 
             return next(ctx, event)
@@ -767,21 +837,30 @@ func WithRecovery() Middleware {
 
 Recovery middleware uses defer and recover to catch panics in processors, preventing them from crashing the worker goroutine. This is essential for robust event processing.
 
+**Why report the panic instead of swallowing it?** Returning nil made a panicking handler
+indistinguishable from a clean one: `PublishSync` reported no error, `WithRetry` had nothing to
+retry, and `WithLogging` logged "completed". A panic is a failure, and the caller should be able to
+tell. If the panic value is itself an error it stays reachable through `errors.As`.
+
+**Where to put it in a `Chain`:** innermost -- last in the argument list -- so the middleware wrapped
+around it observes the failure. An outer `WithRecovery` catches the panic only after it has already
+unwound past them.
+
 ### Logging Middleware
 
 ```go
-// WithLogging logs processor execution.
-func WithLogging() Middleware {
-    return func(next Eventprocessor) Eventprocessor {
+// WithLogging logs processor execution, prefixing each line with msg.
+func WithLogging(msg string, logFunc func(message string)) Middleware {
+    return func(next EventProcessor) EventProcessor {
         return func(ctx context.Context, event *Event) error {
             start := time.Now()
             err := next(ctx, event)
             duration := time.Since(start)
 
             if err != nil {
-                log.Printf("[Middleware] processor for %s failed after %v: %v", event.Type, duration, err)
+                logFunc(fmt.Sprintf("%s [Middleware] Processor for %s failed after %v: %v", msg, event.Type, duration, err))
             } else {
-                log.Printf("[Middleware] processor for %s completed in %v", event.Type, duration)
+                logFunc(fmt.Sprintf("%s [Middleware] Processor for %s completed in %v", msg, event.Type, duration))
             }
 
             return err
@@ -790,14 +869,21 @@ func WithLogging() Middleware {
 }
 ```
 
-Logging middleware provides execution time and error information for debugging and monitoring.
+Logging middleware provides execution time and error information for debugging and monitoring. It
+takes the destination as a parameter rather than reaching for `log` itself, so it composes with
+whatever logger the application already has.
+
+Note that the formatted line goes into a **local**. Assigning it back to the captured `msg` -- which
+is easy to write and was the bug here for a while -- appends each line onto the prefix for the next
+one, so the message grows without bound for the life of the wrapped processor, and concurrent events
+race on that shared string.
 
 ### Middleware Chaining
 
 ```go
 // Chain chains multiple middlewares together.
 func Chain(middlewares ...Middleware) Middleware {
-    return func(processor Eventprocessor) Eventprocessor {
+    return func(processor EventProcessor) EventProcessor {
         for i := len(middlewares) - 1; i >= 0; i-- {
             processor = middlewares[i](processor)
         }
@@ -811,21 +897,23 @@ The chain function applies middlewares in reverse order (last to first), which m
 **Why reverse order?** So the first middleware in the list is the **outermost** wrapper.
 
 ```go
-Chain(WithRecovery(), WithRetry(3, 100ms), WithLogging())(processor)
+Chain(WithLogging("orders", logFn), WithRetry(3, 100*time.Millisecond), WithRecovery())(processor)
 ```
 
 Becomes:
 ```
-WithRecovery(
+WithLogging(
     WithRetry(
-        WithLogging(
+        WithRecovery(
             processor
         )
     )
 )
 ```
 
-So recovery catches panics from retry, retry handles failures from logging, and logging wraps the original processor.
+So recovery turns a panic in the processor into an error, retry sees that error and retries, and
+logging records the final outcome. Putting recovery outermost instead would catch the panic only
+after it had unwound past retry and logging, so neither would ever see it.
 
 ## Event Filtering
 
@@ -838,7 +926,7 @@ type Filter func(*Event) bool
 // Filteredprocessor wraps a processor with a filter condition.
 type Filteredprocessor struct {
     filter  Filter
-    processor Eventprocessor
+    processor EventProcessor
 }
 ```
 
@@ -850,7 +938,7 @@ A filter is a function that returns `true` if the event should be processed, `fa
 
 ```go
 // NewFilteredprocessor creates a processor that only executes when the filter returns true.
-func NewFilteredprocessor(filter Filter, processor Eventprocessor) Eventprocessor {
+func NewFilteredprocessor(filter Filter, processor EventProcessor) EventProcessor {
     return func(ctx context.Context, event *Event) error {
         if filter(event) {
             return processor(ctx, event)
@@ -949,26 +1037,35 @@ Only runs if BOTH conditions are true.
 Batch processing allows multiple events to be processed together for efficiency:
 
 ```go
-// Batchprocessor processes multiple events at once.
-type Batchprocessor func(ctx context.Context, events []*Event) error
+// BatchProcessor processes multiple events at once.
+type BatchProcessor func(ctx context.Context, events []*Event) error
 
-// BatchProcessor collects events and processes them in batches.
-type BatchProcessor struct {
-    mu          sync.Mutex
-    eventType   EventType
-    batchSize   int
-    flushPeriod time.Duration
-    processor     Batchprocessor
-    buffer      []*Event
-    ctx         context.Context
-    cancel      context.CancelFunc
-    wg          sync.WaitGroup
+// BatchErrorHandler is called when a BatchProcessor returns an error.
+type BatchErrorHandler func(ctx context.Context, events []*Event, err error)
+
+// Batch collects events and processes them in batches.
+type Batch struct {
+    mu             sync.Mutex
+    eventType      EventType
+    batchSize      int
+    flushPeriod    time.Duration
+    batchProcessor BatchProcessor
+    onError        BatchErrorHandler
+    buffer         []*Event
+    ctx            context.Context
+    cancel         context.CancelFunc
+    stop           chan struct{} // stops the periodic flush, separately from ctx
+    stopOnce       sync.Once
+    closed         bool          // set by Shutdown; after which Add refuses events
+    wg             sync.WaitGroup // the periodic flush goroutine
+    flushWg        sync.WaitGroup // the goroutines running batchProcessor
 }
 
 // BatchConfig holds configuration for batch processing.
 type BatchConfig struct {
-    BatchSize   int           // Max events per batch
-    FlushPeriod time.Duration // Max time to wait before flushing
+    BatchSize   int               // Max events per batch; <= 0 falls back to 100
+    FlushPeriod time.Duration     // Max time to wait before flushing; <= 0 disables time-based flushing
+    OnError     BatchErrorHandler // Called with the batch and the error when the processor fails
 }
 ```
 
@@ -982,17 +1079,24 @@ If you're sending 1000 emails, it's inefficient to make 1000 API calls. Better t
 
 ```go
 // NewBatchProcessor creates a new batch processor.
-func NewBatchProcessor(eventType EventType, config BatchConfig, processor Batchprocessor) *BatchProcessor {
+func NewBatchProcessor(eventType EventType, config BatchConfig, processor BatchProcessor) *Batch {
+    batchSize := config.BatchSize
+    if batchSize <= 0 {
+        batchSize = defaultBatchSize // 100
+    }
+
     ctx, cancel := context.WithCancel(context.Background())
 
-    bp := &BatchProcessor{
-        eventType:   eventType,
-        batchSize:   config.BatchSize,
-        flushPeriod: config.FlushPeriod,
-        processor:     processor,
-        buffer:      make([]*Event, 0, config.BatchSize),
-        ctx:         ctx,
-        cancel:      cancel,
+    bp := &Batch{
+        eventType:      eventType,
+        batchSize:      batchSize,
+        flushPeriod:    config.FlushPeriod,
+        batchProcessor: processor,
+        onError:        config.OnError,
+        buffer:         make([]*Event, 0, batchSize),
+        ctx:            ctx,
+        cancel:         cancel,
+        stop:           make(chan struct{}),
     }
 
     bp.start()
@@ -1002,14 +1106,18 @@ func NewBatchProcessor(eventType EventType, config BatchConfig, processor Batchp
 
 The batch processor creates a cancellation context and initializes its buffer. It also starts the periodic flush goroutine during initialization.
 
-#### BatchProcessor - The Structure
+**Why clamp `BatchSize`?** Because `len(buffer) >= 0` is true after every single `Add`, so a zero
+batch size flushes a batch of one per event -- the exact opposite of batching.
+
+#### Batch - The Structure
 
 ```go
-type BatchProcessor struct {
-    buffer      []*Event
-    batchSize   int
-    flushPeriod time.Duration
-    processor     Batchprocessor
+type Batch struct {
+    buffer         []*Event
+    batchSize      int
+    flushPeriod    time.Duration
+    batchProcessor BatchProcessor
+    onError        BatchErrorHandler
     // ... synchronization stuff
 }
 ```
@@ -1022,20 +1130,25 @@ type BatchProcessor struct {
 ### Event Addition and Flushing
 
 ```go
-// Add adds an event to the batch buffer.
-func (bp *BatchProcessor) Add(event *Event) {
+// Add adds an event to the batch buffer, reporting whether it was buffered.
+func (bp *Batch) Add(eventToAdd *Event) bool {
     bp.mu.Lock()
     defer bp.mu.Unlock()
 
-    bp.buffer = append(bp.buffer, event)
+    if bp.closed || eventToAdd == nil {
+        return false
+    }
+
+    bp.buffer = append(bp.buffer, eventToAdd)
 
     if len(bp.buffer) >= bp.batchSize {
         bp.flush()
     }
+    return true
 }
 
 // Flush processes all buffered events immediately.
-func (bp *BatchProcessor) Flush() {
+func (bp *Batch) Flush() {
     bp.mu.Lock()
     defer bp.mu.Unlock()
     bp.flush()
@@ -1044,10 +1157,13 @@ func (bp *BatchProcessor) Flush() {
 
 Events are added to the buffer under lock protection. When the buffer reaches capacity, it's automatically flushed to process the batch.
 
+`Add` refuses events once the batch has been shut down: nothing is left to flush the buffer, so
+accepting them would only lose them more quietly.
+
 ```go
 // flush processes the current buffer (must be called with lock held).
-func (bp *BatchProcessor) flush() {
-    if len(bp.buffer) == 0 {
+func (bp *Batch) flush() {
+    if len(bp.buffer) == 0 || bp.batchProcessor == nil {
         return
     }
 
@@ -1055,9 +1171,12 @@ func (bp *BatchProcessor) flush() {
     copy(events, bp.buffer)
     bp.buffer = bp.buffer[:0]
 
+    bp.flushWg.Add(1)
     go func() {
-        if err := bp.processor(bp.ctx, events); err != nil {
-            // Log error but don't block
+        defer bp.flushWg.Done()
+
+        if err := bp.batchProcessor(bp.ctx, events); err != nil && bp.onError != nil {
+            bp.onError(bp.ctx, events, err)
         }
     }()
 }
@@ -1065,32 +1184,25 @@ func (bp *BatchProcessor) flush() {
 
 The flush operation copies the buffer to avoid holding the lock while processing, then processes the batch in a separate goroutine to prevent blocking the caller.
 
-#### Add() - Adding to Buffer
-
-```go
-func (bp *BatchProcessor) Add(event *Event) {
-    bp.mu.Lock()
-    defer bp.mu.Unlock()
-    
-    bp.buffer = append(bp.buffer, event)
-    
-    if len(bp.buffer) >= bp.batchSize {
-        bp.flush()  // ← Time to process!
-    }
-}
-```
+Two details carry weight. The goroutine is tracked on `flushWg`, which is what lets `Shutdown` wait
+for the final batch instead of returning while it is still being written. And the error goes to the
+configured `BatchErrorHandler`: retry, dead-lettering and metrics are the caller's decisions to make,
+but they have to be told about the failure first.
 
 ### Periodic Flushing
 
 ```go
 // start begins the periodic flush goroutine.
-func (bp *BatchProcessor) start() {
+func (bp *Batch) start() {
+    if bp.flushPeriod <= 0 {
+        return
+    }
     bp.wg.Add(1)
     go bp.periodicFlush()
 }
 
 // periodicFlush flushes the buffer at regular intervals.
-func (bp *BatchProcessor) periodicFlush() {
+func (bp *Batch) periodicFlush() {
     defer bp.wg.Done()
 
     ticker := time.NewTicker(bp.flushPeriod)
@@ -1101,7 +1213,7 @@ func (bp *BatchProcessor) periodicFlush() {
         case <-ticker.C:
             bp.Flush()
 
-        case <-bp.ctx.Done():
+        case <-bp.stop:
             return
         }
     }
@@ -1110,52 +1222,64 @@ func (bp *BatchProcessor) periodicFlush() {
 
 The periodic flush goroutine ensures that events don't stay in the buffer indefinitely. It flushes events either when the batch size is reached or when the flush period expires.
 
-#### periodicFlush() - Time-Based Flushing
+**Why the guard in `start`?** `time.NewTicker` panics on a non-positive interval. Since a
+`FlushPeriod` of zero is the documented way to ask for size-only batching, starting the ticker
+anyway took the whole process down a moment after construction. Not starting the goroutine is what
+size-only should have meant all along.
 
-```go
-func (bp *BatchProcessor) periodicFlush() {
-    ticker := time.NewTicker(bp.flushPeriod)
-    defer ticker.Stop()
-    
-    for {
-        select {
-        case <-ticker.C:
-            bp.Flush()  // ← Flush every N seconds
-        case <-bp.ctx.Done():
-            return
-        }
-    }
-}
-```
-
-This runs in a goroutine, flushing the buffer periodically.
+**Why a `stop` channel rather than `ctx.Done()`?** Because the two events happen at different points
+in `Shutdown`: the ticker has to stop before the final flush, and the context has to stay live
+through it.
 
 ### Event processor Wrapper
 
 ```go
-// AsEventprocessor returns an Eventprocessor that adds events to the batch.
-func (bp *BatchProcessor) AsEventprocessor() Eventprocessor {
-    return func(ctx context.Context, event *Event) error {
-        bp.Add(event)
+// AsEventProcessor returns an EventProcessor that adds events to the batch.
+func (bp *Batch) AsEventProcessor() EventProcessor {
+    return func(ctx context.Context, eventToAdd *Event) error {
+        if !bp.Add(eventToAdd) {
+            return goserr.NewProcessingErrorf("batch processor for %s is shut down", bp.eventType)
+        }
         return nil
     }
 }
 ```
 
-This method allows the batch processor to be used as a regular event processor by simply adding events to the batch.
+This method allows the batch processor to be used as a regular event processor by simply adding events to the batch. A refused add becomes an error, so the bus learns the event went nowhere.
 
 ### Batch Processor Shutdown
 
 ```go
 // Shutdown stops the batch processor and flushes remaining events.
-func (bp *BatchProcessor) Shutdown() {
-    bp.cancel()
-    bp.wg.Wait()
-    bp.Flush()
+func (bp *Batch) Shutdown() {
+    bp.stopOnce.Do(func() {
+        bp.mu.Lock()
+        bp.closed = true
+        bp.mu.Unlock()
+
+        close(bp.stop) // stop the periodic flush
+        bp.wg.Wait()   // wait for it to actually stop
+
+        bp.Flush()        // hand off whatever is left
+        bp.flushWg.Wait() // ...and wait for that batch to land
+
+        bp.cancel() // nothing runs under this context any more
+    })
 }
 ```
 
-The shutdown process cancels the context, waits for the periodic goroutine to finish, then flushes any remaining events in the buffer.
+The shutdown process stops the periodic goroutine, flushes any remaining events, waits for that final
+batch to be processed, and only then cancels the context.
+
+**Why wait on `flushWg`?** Because `flush` hands the batch to a goroutine. Without the wait, Shutdown
+returns while the final batch is still being written, and the process can exit before it lands --
+which is the exact opposite of what "flushes remaining events" promises.
+
+**Why cancel last?** Because `bp.ctx` is what the batch processor is given. Cancelling first means the
+final batch runs under an already-cancelled context, and every context-aware database write inside it
+fails immediately.
+
+**Why `sync.Once`?** A second Shutdown would otherwise close an already-closed channel and panic.
 
 ## Global Event Bus
 
@@ -1163,40 +1287,44 @@ Gossip provides a global singleton event bus for application-wide access:
 
 ```go
 var (
-    globalBus *EventBus
-    once      sync.Once
+    globalBus     *EventBus
+    globalBusOnce sync.Once
 )
 
 // GetGlobalBus returns the singleton event bus instance.
 func GetGlobalBus() *EventBus {
-    once.Do(func() {
+    globalBusOnce.Do(func() {
         globalBus = NewEventBus(DefaultConfig())
     })
     return globalBus
+}
+
+// InitGlobalBus initializes the global event bus with custom configuration.
+func InitGlobalBus(cfg *Config) {
+    globalBusOnce.Do(func() {
+        globalBus = NewEventBus(cfg)
+    })
 }
 ```
 
 The global bus uses `sync.Once` to ensure it's initialized only once, even in concurrent scenarios.
 
-### Global Convenience Functions
+Note that both functions share that `Once`. `InitGlobalBus` has to run before anything reaches for
+`GetGlobalBus`, or the defaults win and the custom config is silently ignored -- call it early in
+`main()`.
 
-```go
-// Publish is a convenience function to publish events to the global bus.
-func Publish(event *Event) {
-    GetGlobalBus().Publish(event)
-}
-
-// Subscribe is a convenience function to subscribe to the global bus.
-func Subscribe(eventType EventType, processor Eventprocessor) string {
-    return GetGlobalBus().Subscribe(eventType, processor)
-}
-```
-
-These functions provide a simple API for applications that want to use a global event bus without managing the instance themselves.
+There are no package-level `Publish` or `Subscribe` shortcuts. Going through `GetGlobalBus()` keeps
+it visible at every call site that a process-wide singleton is involved.
 
 ## Testing Implementation
 
-The implementation includes comprehensive tests covering various scenarios:
+The implementation includes comprehensive tests covering various scenarios.
+
+One habit worth adopting before reading them: **synchronise on `Shutdown()`, not on `time.Sleep`.**
+`Shutdown` drains everything the bus has accepted and returns once the workers are done, so an
+assertion after it is exact and there is no timing to tune. The sleeps below are the older style and
+work, but they are guesses -- they can be too short on a loaded CI box and are always too long
+locally. `PublishSync` is the other option, when the test wants the processors' errors too.
 
 ### Basic Publish/Subscribe Test
 
@@ -1220,7 +1348,7 @@ func TestEventBus_PublishSubscribe(t *testing.T) {
 
     bus.Publish(event)
 
-    time.Sleep(100 * time.Millisecond)
+    require.NoError(t, bus.Shutdown()) // drains: every accepted event is processed before this returns
 
     if atomic.LoadInt32(&received) != 1 {
         t.Errorf("Expected 1 event, got %d", received)
@@ -1253,7 +1381,7 @@ func TestEventBus_MultipleSubscribers(t *testing.T) {
 
     bus.Publish(event)
 
-    time.Sleep(100 * time.Millisecond)
+    require.NoError(t, bus.Shutdown()) // drains: every accepted event is processed before this returns
 
     if atomic.LoadInt32(&counter) != 5 {
         t.Errorf("Expected 5 invocations, got %d", counter)
@@ -1291,7 +1419,7 @@ func TestEventBus_ConcurrentPublish(t *testing.T) {
     }
 
     wg.Wait()
-    time.Sleep(200 * time.Millisecond)
+    require.NoError(t, bus.Shutdown()) // drains: every accepted event is processed before this returns
 
     if atomic.LoadInt32(&counter) != int32(numEvents) {
         t.Errorf("Expected %d events, got %d", numEvents, counter)
@@ -1477,7 +1605,7 @@ Want rate limiting? Create a middleware:
 func WithRateLimit(limit int, period time.Duration) Middleware {
     limiter := rate.NewLimiter(rate.Every(period), limit)
     
-    return func(next Eventprocessor) Eventprocessor {
+    return func(next EventProcessor) EventProcessor {
         return func(ctx context.Context, event *Event) error {
             if !limiter.Allow() {
                 return fmt.Errorf("rate limit exceeded")

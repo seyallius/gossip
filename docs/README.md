@@ -55,14 +55,16 @@ Now `CreateUser` doesn't give a damn about emails, logs, metrics, notifications.
 
 - **🔒 Strongly-typed events** - No string typos with `EventType` constants
 - **⚡ Async by default** - Non-blocking event dispatch with worker pools
-- **🔌 Pluggable providers** - In-memory, Valkey or Redis Pub/Sub support
 - **🎯 Event filtering** - Conditional processor execution
 - **📦 Batch processing** - Process multiple events efficiently
 - **🔄 Bulk subscription** - Subscribe to multiple event types with a single processor
 - **🔧 Middleware support** - Retry, timeout, logging, recovery
-- **🎚️ Priority queues** - Handle critical events first
 - **🛡️ Thread-safe** - Concurrent publish/subscribe operations
-- **🧹 Graceful shutdown** - Wait for in-flight events
+- **🧹 Graceful shutdown** - Drains the backlog, so accepted events are not dropped on the way out
+
+Gossip is **in-process**: `Publish` puts the event on a Go channel and a worker goroutine picks it up.
+There is no broker and no network hop. It is a way to structure one application around events, not a
+replacement for Kafka, NATS or Redis Pub/Sub.
 
 ## 📚 Navigation
 

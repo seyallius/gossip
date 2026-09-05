@@ -37,9 +37,13 @@ type UserData struct {
 }
 
 func main() {
-	// Initialize event bus with default in-memory provider
+	// Initialize event bus. Shutdown drains everything the bus accepted before it returns.
 	eventBus := bus.NewEventBus(bus.DefaultConfig())
-	defer eventBus.Shutdown()
+	defer func() {
+		if err := eventBus.Shutdown(); err != nil {
+			log.Printf("event bus shutdown did not finish cleanly: %v", err)
+		}
+	}()
 
 	// Subscribe processor
 	eventBus.Subscribe(UserCreated, func(ctx context.Context, eventToPub *event.Event) error {
@@ -53,7 +57,9 @@ func main() {
 		UserID:   "123",
 		Username: "alice",
 	})
-	eventBus.Publish(evnt)
+	if !eventBus.Publish(evnt) {
+		log.Printf("event bus rejected the %s event", UserCreated)
+	}
 
 	// Example of SubscribeMultiple - subscribe to multiple event types with one processor
 	const (
@@ -313,29 +319,32 @@ eventBus.UnsubscribeMultiple(subscriptionIDs)
 
 ```go
 config := &bus.Config{
-    Workers:    20,     // Number of worker goroutines
-    BufferSize: 2000,   // Event channel buffer size
+    Workers:         20,              // Number of worker goroutines
+    BufferSize:      2000,            // Event channel buffer size
+    ShutdownTimeout: 5 * time.Second, // How long Shutdown waits for the backlog to drain
 }
 eventBus := bus.NewEventBus(config)
-defer eventBus.Shutdown()
+defer func() {
+    if err := eventBus.Shutdown(); err != nil {
+        log.Printf("event bus shutdown did not finish cleanly: %v", err)
+    }
+}()
 ```
 
-### Provider Configuration
+Every field falls back to its default when left at zero or below: 10 workers, a buffer of 1000, and a
+5 second shutdown timeout. Out-of-range values are replaced rather than honoured, since none of them
+describes a working bus -- zero workers accepts events and never processes them, and a zero buffer
+makes the channel unbuffered, which turns `Publish`'s non-blocking send into a drop whenever no worker
+happens to be free.
 
-Gossip supports different transport providers:
+### Scope
 
-**Memory Provider (Default):**
-- Fastest option for single-application scenarios
-- Events stay within the same process
-- No external dependencies
+Gossip is **in-process**. `Publish` puts the event on a Go channel and a worker goroutine picks it up:
+there is no broker, no network hop, and no delivery to other processes. It is a way to structure one
+application around events, and it is not a replacement for Kafka, NATS or Redis Pub/Sub.
 
-**Redis Provider:**
-- For distributed systems across multiple services
-- Events can cross process boundaries
-- Requires Redis server
-
-**Valkey Provider:**
-> Will panic as it's not implemented and is planned for future.
+A consequence worth stating plainly: events that are still in the buffer when the process dies are
+gone. `Shutdown` drains what has been accepted, but nothing survives a crash.
 
 ## 🧩 Components Quick Start
 
@@ -346,17 +355,19 @@ The event bus handles publishing and subscribing to events:
 ```go
 // Initialize with custom config
 config := &bus.Config{
-    Workers:    20,     // Number of worker goroutines
-    BufferSize: 2000,   // Event channel buffer size
+    Workers:    20,   // Number of worker goroutines
+    BufferSize: 2000, // Event channel buffer size
 }
 eventBus := bus.NewEventBus(config)
-defer eventBus.Shutdown()
+defer func() { _ = eventBus.Shutdown() }()
 
-// Subscribe to events
-eventBus.Subscribe(UserCreated, myProcessor)
+// Subscribe to events (keep the ID if you will ever unsubscribe)
+subscriptionID := eventBus.Subscribe(UserCreated, myProcessor)
 
-// Publish events (async)
-eventBus.Publish(event)
+// Publish events (async) - false means the event was dropped
+if !eventBus.Publish(event) {
+    log.Printf("event bus rejected the %s event", UserCreated)
+}
 
 // Publish events (sync - waits for all processors to complete)
 errors := eventBus.PublishSync(ctx, event)
@@ -393,16 +404,20 @@ Chain behaviors around processors:
 ```go
 import "github.com/seyallius/gossip/v2/event/middleware"
 
-// Chain multiple middleware
+// Chain multiple middleware. Order is outermost-first, so WithRecovery goes last: it turns a panic
+// into an error, and everything wrapped around it gets to see that error.
 processor := middleware.Chain(
     middleware.WithRetry(3, 100*time.Millisecond),
     middleware.WithTimeout(5*time.Second),
-    middleware.WithLogging("processing event", log.Println),
+    middleware.WithLogging("processing event", func(message string) { log.Println(message) }),
     middleware.WithRecovery(),
 )(myProcessor)
 
 eventBus.Subscribe(UserCreated, processor)
 ```
+
+Note that `WithRecovery` is not optional insurance. A processor that panics takes down the worker
+goroutine, and with it the process -- the bus does not recover on your behalf.
 
 ### 4. Batch Processing
 
@@ -424,21 +439,36 @@ batchProcessor := func(ctx context.Context, events []*event.Event) error {
 
 // Configure batch processing
 batchConfig := batch.BatchConfig{
-    BatchSize:   100,              // Process in groups of 100
-    FlushPeriod: 5 * time.Second,  // Flush every 5 seconds if not full
+    BatchSize:   100,             // Process in groups of 100
+    FlushPeriod: 5 * time.Second, // Flush every 5 seconds if not full; 0 disables time-based flushing
+    OnError: func(ctx context.Context, events []*event.Event, err error) {
+        log.Printf("batch of %d events failed: %v", len(events), err)
+    },
 }
 
 // Create batch processor
 processor := batch.NewBatchProcessor(UserCreated, batchConfig, batchProcessor)
 eventBus.Subscribe(UserCreated, processor.AsEventProcessor())
+
+// Order matters on the way out: the bus feeds the batch, so drain the bus first
+defer func() {
+    _ = eventBus.Shutdown()
+    processor.Shutdown()
+}()
 ```
 
+Without `OnError`, a failing `BatchProcessor` is silent -- the batch is gone and nothing is told.
+`processor.Shutdown()` flushes the partial batch and blocks until it has actually been processed.
+
 ## 🧪 Testing
+
+Synchronise on `Shutdown()`, not on a sleep. It drains everything the bus has accepted and returns
+when the workers are done, so the assertion is exact and there is no timing to tune:
 
 ```go
 func TestMyProcessor(t *testing.T) {
     eventBus := bus.NewEventBus(bus.DefaultConfig())
-    defer eventBus.Shutdown()
+    defer eventBus.Shutdown() // idempotent, so this is just a safety net
 
     received := false
     processor := func(ctx context.Context, event *event.Event) error {
@@ -447,12 +477,14 @@ func TestMyProcessor(t *testing.T) {
     }
 
     eventBus.Subscribe(UserCreated, processor)
-    eventBus.Publish(event.NewEvent(UserCreated, nil))
+    require.True(t, eventBus.Publish(event.NewEvent(UserCreated, nil)))
 
-    time.Sleep(100 * time.Millisecond)
+    require.NoError(t, eventBus.Shutdown())
     assert.True(t, received)
 }
 ```
+
+`PublishSync` is the other option, when the test wants the processors' errors as well.
 
 ## 🎯 Best Practices
 
@@ -475,6 +507,12 @@ func TestMyProcessor(t *testing.T) {
 - Adjust `Workers` based on event volume
 - Set `BufferSize` based on peak load expectations
 - Use batch processing for high-volume scenarios
+
+### 5. Check What the API Tells You
+- `Publish` returns `false` when the event was dropped -- a full buffer or a bus shutting down
+- `Shutdown` returns an error when the backlog outran `ShutdownTimeout`
+- `BatchConfig.OnError` is the only way to learn that a batch failed
+- Wrap processors in `middleware.WithRecovery()`; an unrecovered panic takes down the process
 
 ## Next Steps
 

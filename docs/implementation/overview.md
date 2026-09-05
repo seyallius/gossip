@@ -6,12 +6,16 @@ This section provides a comprehensive overview of how Gossip is implemented, inc
 
 The core of Gossip is built around several key components:
 
-1. **EventBus** - The main coordinator that delegates operations to the underlying provider
-2. **Provider** - Interface that abstracts the underlying transport mechanism (in-memory, Redis, etc.)
-3. **Event** - The data structure that carries information through the system
-4. **EventProcessor** - Functions that process events
-5. **Middleware** - Pluggable functionality that wraps processors
-6. **Filters** - Conditional execution of processors based on event properties
+1. **EventBus** - Owns the subscription registry, the event channel, and the worker pool
+2. **Event** - The data structure that carries information through the system
+3. **EventProcessor** - Functions that process events
+4. **Middleware** - Pluggable functionality that wraps processors
+5. **Filters** - Conditional execution of processors based on event properties
+6. **Batch** - An adapter that accumulates events and processes them in groups
+
+Everything is in-process. There is no transport abstraction and no network hop: `Publish` puts the
+event on a Go channel and a worker goroutine picks it up. Gossip is a way to structure a single
+application around events, not a message broker.
 
 ### Core Data Types
 
@@ -26,66 +30,54 @@ type Subscription struct {
     EProcessor EventProcessor
 }
 
-// EventBus manages the specific provider.
+// EventBus manages event publishing and subscription.
 type EventBus struct {
-    provider Provider
-}
-
-// Provider defines the behavior for an event transport engine (e.g., Memory, Redis, NATS).
-type Provider interface {
-    Publish(event *Event) error                                                                     // Publish sends an event to the underlying transport.
-    Subscribe(eventType EventType, processor EventProcessor) (subscriptionId string, err error) // Subscribe registers a processor for a topic.
-    Unsubscribe(subscriptionID string) error                                                              // Unsubscribe removes a subscription.
-    Shutdown() error                                                                                      // Shutdown cleans up resources.
-}
-
-// EventBus provides methods for event handling.
-type EventBus struct {
-    Subscribe(eventType EventType, processor EventProcessor) string                    // Subscribe registers a processor for an event type.
-    SubscribeMultiple(eventTypes []EventType, processor EventProcessor) []string       // SubscribeMultiple registers a processor for multiple event types.
-    Unsubscribe(subscriptionId string)                                                 // Unsubscribe removes a subscription by ID.
-    UnsubscribeMultiple(subscriptionIds []string)                                      // UnsubscribeMultiple removes multiple subscriptions by IDs.
-    Publish(event *Event) error                                                        // Publish sends an event to the bus.
-    Shutdown() error                                                                   // Shutdown cleans up resources.
+    subscriptions map[EventType][]*Subscription // one slice of subscribers per event type
+    eventChan     chan *Event                   // buffered hand-off to the worker pool
+    // ... workers, context, mutex, wait group
 }
 ```
 
-### Provider Architecture
-
-Gossip implements a flexible provider-based architecture that allows pluggable transport mechanisms. This design enables the same API to work with different underlying technologies like in-memory channels or distributed systems like Redis.
-
-#### Provider Interface
-
-The `Provider` interface defines the contract that all transport implementations must satisfy:
+### The EventBus API
 
 ```go
-type Provider interface {
-    Publish(event *Event) error
-    Subscribe(eventType EventType, processor EventProcessor) (subscriptionId string, err error)
-    Unsubscribe(subscriptionID string) error
-    Shutdown() error
-}
+func (eb *EventBus) Subscribe(eventType EventType, processor EventProcessor) string
+func (eb *EventBus) SubscribeMultiple(eventTypes []EventType, processor EventProcessor) []string
+func (eb *EventBus) Unsubscribe(subscriptionId string) bool
+func (eb *EventBus) UnsubscribeMultiple(subscriptionIds []string)
+func (eb *EventBus) Publish(event *Event) bool
+func (eb *EventBus) PublishSync(ctx context.Context, event *Event) []error
+func (eb *EventBus) Shutdown() error
 ```
 
-#### Available Providers
+`Publish` and `Shutdown` both report back. `Publish` returning `false` means the event was dropped --
+a full buffer or a bus that is shutting down -- and `Shutdown` returning an error means the backlog
+was still draining when `ShutdownTimeout` elapsed. Neither can block, and neither is allowed to
+fail silently.
 
-1. **InMemoryProvider** - Uses Go channels for local, in-process event communication
-2. **RedisProvider** - Uses Redis Pub/Sub for distributed event communication across multiple services
+### Dispatching Without Holding the Lock
+
+`dispatch` takes the read lock only long enough to read the slice header for an event type, then
+iterates it with the lock released -- so one slow processor cannot block every subscription change on
+the bus. That puts the burden on the write side: `Unsubscribe` builds a new slice rather than
+shifting elements down inside the array a publish may be walking, while `Subscribe` can append
+normally, because an append is invisible to a reader holding the old, shorter length.
 
 #### Configuration
 
-The architecture introduces a driver-based configuration system:
-
 ```go
 type Config struct {
-    Driver     string // "memory" or "redis"
-    Workers    int    // Number of worker goroutines
-    BufferSize int    // Size of the event channel buffer
-    RedisAddr  string // Redis address (for Redis provider)
-    RedisPwd   string // Redis password (for Redis provider)
-    RedisDB    int    // Redis database (for Redis provider)
+    Workers         int           // Number of worker goroutines
+    BufferSize      int           // Size of the event channel buffer
+    ShutdownTimeout time.Duration // How long Shutdown waits for the backlog to drain
 }
 ```
+
+Any field left at zero (or negative) falls back to its default: 10 workers, a buffer of 1000, and a
+5 second shutdown timeout. Out-of-range values are replaced rather than honoured, because none of
+them describes a usable bus -- zero workers accepts events and never processes them, and a zero
+buffer makes the channel unbuffered, which turns `Publish`'s non-blocking send into a drop whenever
+no worker happens to be parked on the receive.
 
 ## Event Types and Data Structures
 
@@ -145,12 +137,19 @@ func NewEvent(eventType EventType, data any) *Event {
 
 // WithMetadata adds metadata to the event and returns the event for chaining.
 func (e *Event) WithMetadata(key string, value any) *Event {
+    if e.Metadata == nil {
+        e.Metadata = make(map[string]any, 1)
+    }
     e.Metadata[key] = value
     return e
 }
 ```
 
 The `NewEvent` function automatically sets the timestamp when created, providing a consistent way to track when events occurred. The `WithMetadata` method enables method chaining for fluent API usage.
+
+`WithMetadata` creates the map when it is missing. `NewEvent` allocates one, but an `Event` built as a
+struct literal -- which is what test fixtures and decoders produce -- carries a nil map, and assigning
+into that panics.
 
 This is **method chaining**. It lets you write beautiful code:
 
@@ -180,11 +179,15 @@ We chose `any` (interface{}) for the event data field to maintain maximum flexib
 
 ### Why Buffer Size in Channel?
 
-The buffered channel provides decoupling between publishers and processors. When the system experiences bursts of events, the buffer absorbs the load temporarily, preventing publishers from being blocked. However, if the buffer fills up, events are dropped to maintain system responsiveness.
+The buffered channel provides decoupling between publishers and processors. When the system experiences bursts of events, the buffer absorbs the load temporarily, preventing publishers from being blocked. However, if the buffer fills up, events are dropped to maintain system responsiveness -- and `Publish` returns `false` so the caller can decide what that is worth: a retry, a log line, a metric, or a fall back to `PublishSync`.
 
 ### Why Subscription IDs?
 
 Subscription IDs allow for precise unsubscription, which is important when components need to be dynamically started and stopped. Rather than requiring users to remember both the event type and processor function, they only need to store the returned subscription ID.
+
+The ID is `"<event type>-<counter>"`, where the counter is per-bus and monotonic. It has to be unique:
+`Unsubscribe` removes the first subscription whose ID matches, so two subscriptions sharing an ID
+would mean removing one of them silently removes the other.
 
 ### Why Two Publish Methods?
 
@@ -223,9 +226,13 @@ In asynchronous operation, errors from processors are typically logged but not p
 ### Graceful Degradation
 
 The system is designed to continue operating even when individual processors fail:
-- Failed processors don't prevent other processors from running
-- Worker goroutines recover from panics to maintain availability
-- Event drops during high load are preferred over system overload
+- Failed processors don't prevent other processors from running: `dispatch` collects errors per subscription and carries on
+- Event drops during high load are preferred over system overload, and `Publish` reports each one
+
+Panics are the exception. A processor that panics takes down the worker goroutine, and with it the
+process -- the bus does not recover on your behalf, because silently swallowing a panic is how a
+broken handler stays broken. Wrap processors in `middleware.WithRecovery()`, which converts the
+panic into a `ProcessingError` the surrounding middleware can see.
 
 This ensures that a single faulty processor or event doesn't bring down the entire event system.
 
