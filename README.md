@@ -20,6 +20,28 @@ Gossip is **in-process**: `Publish` puts the event on a Go channel and a worker 
 There is no broker and no network hop. It is a way to structure one application around events, not a
 replacement for Kafka, NATS or Redis Pub/Sub.
 
+## ⬆️ Upgrading
+
+Three behaviours changed in a way existing code can notice. All of them are source-compatible --
+nothing stops compiling -- so they are worth reading before you upgrade.
+
+**`middleware.WithRecovery()` reports the panic instead of swallowing it.** It used to return nil, so
+a panicking handler was indistinguishable from a clean one. It now returns an `errors.ProcessingError`.
+If you chain it with `WithRetry`, a panicking handler will now be retried.
+
+**`Publish` returns `bool` and `Shutdown` returns `error`.** Statement-style calls are unaffected
+(`bus.Publish(e)` and `defer bus.Shutdown()` still compile). `false` from `Publish` means the event
+was dropped -- a full buffer, or a bus already shutting down.
+
+**`Shutdown` drains before returning.** It used to cancel the context and discard whatever was still
+buffered; it now delivers those events, waits for the workers, and cancels the context last. If your
+code sleeps after publishing to give handlers time to run, you can usually delete the sleep. It waits
+at most `Config.ShutdownTimeout` (5s by default) and returns a `TimeoutError` if that elapses.
+
+Smaller: the `*Errorf` error constructors now leave `Message` empty and put the formatted text in
+`Err`, which is what lets the format string wrap a cause with `%w`. `Error()` output is unchanged
+except that it no longer prints the message twice.
+
 ## 📦 Installation
 
 ```bash

@@ -144,11 +144,15 @@ type BatchConfig struct {
 }
 
 // NewBatchProcessor creates a new batch processor with the given configuration.
-// It also starts the configured number of worker goroutines and creates
-// a context.WithCancel for cancellation.
+// It starts the periodic flush goroutine (unless FlushPeriod disables time-based flushing) and
+// creates a context.WithCancel for cancellation.
+//
+// A non-positive BatchSize falls back to defaultBatchSize; a non-positive FlushPeriod disables
+// time-based flushing, leaving Add, Flush and Shutdown as the only triggers.
+//
 // Parameters:
 //   - eventType: The type of events this processor will handle
-//   - config: Configuration for batch size and flush timing
+//   - config: Configuration for batch size, flush timing, and error handling
 //   - processor: The batch processing function that will be called with batched events
 //
 // Returns a pointer to a Batch that can be used to add events manually
