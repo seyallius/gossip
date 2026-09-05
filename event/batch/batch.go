@@ -13,8 +13,13 @@ import (
 	"time"
 
 	"github.com/seyallius/gossip/v2/event"
+	goserr "github.com/seyallius/gossip/v2/event/errors"
 	"github.com/seyallius/gossip/v2/event/sub"
 )
+
+// defaultBatchSize is used when BatchConfig.BatchSize is zero or negative. Without it, every Add
+// satisfies len(buffer) >= batchSize and flushes a batch of one, which is the opposite of batching.
+const defaultBatchSize = 100
 
 // ----------------------------------------------- Types -------------------------------------------- //
 
@@ -32,6 +37,11 @@ import (
 //	    return bulkInsertToDatabase(events)
 //	}
 type BatchProcessor func(ctx context.Context, events []*event.Event) error
+
+// BatchErrorHandler is called when a BatchProcessor returns an error. It receives the same context
+// and events the processor was given, so it can retry them, write them to a dead-letter queue, or
+// just count them.
+type BatchErrorHandler func(ctx context.Context, events []*event.Event, err error)
 
 // Batch collects events and processes them in batches according to the
 // configured batching strategy (size-based or time-based).
@@ -76,11 +86,24 @@ type Batch struct {
 	// every 5 seconds, even if only 1 event was received.
 	flushPeriod time.Duration
 
-	// ctx and cancel provide graceful shutdown capability.
-	// The context is cancelled when Shutdown() is called, which signals
-	// the periodic flush goroutine to stop.
+	// onError receives any error a BatchProcessor returns. Nil means errors are discarded, which is
+	// what this type used to do unconditionally.
+	onError BatchErrorHandler
+
+	// ctx and cancel provide the context handed to the batch processor. It is cancelled at the very
+	// end of Shutdown, once nothing is running under it any more -- cancelling it earlier would hand
+	// the final batch a dead context, which is exactly the batch that most needs a live one.
 	ctx    context.Context
 	cancel context.CancelFunc
+
+	// stop signals the periodic flush goroutine to exit. It is separate from ctx so that stopping the
+	// ticker and cancelling the processor context can happen at different points in Shutdown.
+	stop     chan struct{}
+	stopOnce sync.Once
+
+	// closed is set by Shutdown, after which Add refuses events: they would be buffered with nothing
+	// left to flush them, and would restart the flush WaitGroup that Shutdown has already waited on.
+	closed bool
 
 	// mu protects concurrent access to the buffer.
 	// Since Add() can be called from multiple goroutines (e.g., multiple
@@ -92,6 +115,11 @@ type Batch struct {
 	// When Shutdown() is called, it waits for this goroutine to exit
 	// before returning, ensuring no goroutine leaks.
 	wg sync.WaitGroup
+
+	// flushWg tracks the goroutines running batchProcessor. flush() hands the batch off
+	// asynchronously, so without this Shutdown returned while the final batch was still being
+	// written -- and the process could exit before it landed.
+	flushWg sync.WaitGroup
 }
 
 // BatchConfig holds configuration for batch processing.
@@ -106,9 +134,13 @@ type BatchConfig struct {
 	// even if it hasn't reached BatchSize. This prevents events from
 	// being stuck in the buffer during periods of low activity.
 	//
-	// Setting this to 0 disables time-based flushing (size-only).
-	// Setting this to a very large value effectively disables it.
+	// Setting this to 0 (or a negative value) disables time-based flushing, leaving Add, Flush and
+	// Shutdown as the only triggers.
 	FlushPeriod time.Duration
+
+	// OnError is called with the context, the batch, and the error whenever a BatchProcessor fails.
+	// Leaving it nil discards errors, which is what this package used to do with no way to opt out.
+	OnError BatchErrorHandler
 }
 
 // NewBatchProcessor creates a new batch processor with the given configuration.
@@ -128,15 +160,22 @@ type BatchConfig struct {
 //	processor := NewBatchProcessor("user.login", config, batchLoginProcessor)
 //	defer processor.Shutdown()
 func NewBatchProcessor(eventType event.EventType, config BatchConfig, processor BatchProcessor) *Batch {
+	batchSize := config.BatchSize
+	if batchSize <= 0 {
+		batchSize = defaultBatchSize
+	}
+
 	ctx, cancel := context.WithCancel(context.Background())
 	bp := &Batch{
 		eventType:      eventType,
-		batchSize:      config.BatchSize,
+		batchSize:      batchSize,
 		flushPeriod:    config.FlushPeriod,
 		batchProcessor: processor,
-		buffer:         make([]*event.Event, 0, config.BatchSize), // Pre-allocate capacity fixme: sync.pool?
+		onError:        config.OnError,
+		buffer:         make([]*event.Event, 0, batchSize), // Pre-allocate capacity fixme: sync.pool?
 		ctx:            ctx,
 		cancel:         cancel,
+		stop:           make(chan struct{}),
 	}
 
 	bp.start()
@@ -155,16 +194,24 @@ func NewBatchProcessor(eventType event.EventType, config BatchConfig, processor 
 // blocks until the flush completes (specifically, until the buffer is
 // copied and cleared). For high-throughput scenarios, consider using
 // a non-blocking approach or larger batch sizes.
-func (bp *Batch) Add(event *event.Event) {
+//
+// It reports whether the event was buffered. A false means the batch has been shut down: nothing is
+// left to flush the buffer, so accepting the event would only lose it more quietly.
+func (bp *Batch) Add(eventToAdd *event.Event) bool {
 	bp.mu.Lock()
 	defer bp.mu.Unlock()
 
-	bp.buffer = append(bp.buffer, event)
+	if bp.closed || eventToAdd == nil {
+		return false
+	}
+
+	bp.buffer = append(bp.buffer, eventToAdd)
 
 	// Size-based trigger: If we've collected enough events, flush now
 	if len(bp.buffer) >= bp.batchSize {
 		bp.flush()
 	}
+	return true
 }
 
 // Flush processes all buffered events immediately.
@@ -188,9 +235,19 @@ func (bp *Batch) Flush() {
 // Shutdown stops the batch processor and flushes remaining events.
 //
 // This method performs graceful shutdown in the following order:
-//  1. Cancels the context to signal the periodic flush goroutine to stop
-//  2. Waits for the periodic flush goroutine to exit (wg.Wait())
+//  1. Signals the periodic flush goroutine to stop, and stops accepting new events
+//  2. Waits for the periodic flush goroutine to exit
 //  3. Flushes any remaining events in the buffer
+//  4. Waits for every in-flight BatchProcessor to return
+//  5. Cancels the context the processors were given
+//
+// Steps 4 and 5 are what make the guarantee real. flush() hands the batch to a goroutine, so
+// Shutdown used to return while the final batch was still being written -- and it cancelled the
+// context first, meaning that batch ran under an already-cancelled one and any context-aware write
+// inside it failed immediately.
+//
+// It blocks until the final batch has been processed, so a BatchProcessor that never returns will
+// hold up shutdown. Calling it more than once is safe; later calls wait for the first to finish.
 //
 // It's important to call Shutdown() before the application exits to
 // ensure all events are processed and goroutines are cleaned up.
@@ -199,9 +256,19 @@ func (bp *Batch) Flush() {
 //	processor := NewBatchProcessor(...)
 //	defer processor.Shutdown()
 func (bp *Batch) Shutdown() {
-	bp.cancel()  // Signal periodic flush to stop
-	bp.wg.Wait() // Wait for it to actually stop
-	bp.Flush()   // Process any remaining events
+	bp.stopOnce.Do(func() {
+		bp.mu.Lock()
+		bp.closed = true
+		bp.mu.Unlock()
+
+		close(bp.stop) // Signal periodic flush to stop
+		bp.wg.Wait()   // Wait for it to actually stop
+
+		bp.Flush()        // Process any remaining events
+		bp.flushWg.Wait() // ...and wait for that batch to actually land
+
+		bp.cancel() // Nothing runs under this context any more
+	})
 }
 
 // AsEventProcessor returns a sub.EventProcessor that adds events to the batch.
@@ -219,8 +286,10 @@ func (bp *Batch) Shutdown() {
 // This enables seamless integration of batch processing into the existing
 // event-driven architecture without modifying event publishing code.
 func (bp *Batch) AsEventProcessor() sub.EventProcessor {
-	return func(ctx context.Context, event *event.Event) error {
-		bp.Add(event)
+	return func(ctx context.Context, eventToAdd *event.Event) error {
+		if !bp.Add(eventToAdd) {
+			return goserr.NewProcessingErrorf("batch processor for %s is shut down", bp.eventType)
+		}
 		return nil
 	}
 }
@@ -231,11 +300,18 @@ func (bp *Batch) AsEventProcessor() sub.EventProcessor {
 //
 // This internal method starts a background goroutine that periodically
 // flushes the buffer based on flushPeriod. The goroutine runs until
-// the context is cancelled (via Shutdown()).
+// Shutdown() signals it to stop.
 //
 // The goroutine is tracked with a WaitGroup so Shutdown() can wait for
 // it to exit cleanly.
+//
+// Nothing is started when flushPeriod is not positive: that is the documented way to ask for
+// size-only batching, and time.NewTicker panics on a non-positive interval, so the configuration the
+// docs recommended used to take the process down at construction time.
 func (bp *Batch) start() {
+	if bp.flushPeriod <= 0 {
+		return
+	}
 	bp.wg.Add(1)
 	go bp.periodicFlush()
 }
@@ -247,7 +323,7 @@ func (bp *Batch) start() {
 // in the buffer during low-traffic periods.
 //
 // The method uses a ticker to trigger at regular intervals and listens
-// for context cancellation to exit gracefully during shutdown.
+// for the stop signal to exit gracefully during shutdown.
 func (bp *Batch) periodicFlush() {
 	defer bp.wg.Done()
 
@@ -259,7 +335,7 @@ func (bp *Batch) periodicFlush() {
 		case <-ticker.C: // Time-based trigger: Flush if enough time has passed
 			bp.Flush()
 
-		case <-bp.ctx.Done(): // Context cancelled (shutdown signal) - exit goroutine
+		case <-bp.stop: // Shutdown signal - exit goroutine
 			return
 		}
 	}
@@ -283,9 +359,11 @@ func (bp *Batch) periodicFlush() {
 //   - Allow concurrent processing of multiple batches
 //   - Maintain responsiveness of the event system
 //
-// Error handling: Errors from batchProcessor are ignored.
+// The goroutine is tracked on flushWg so Shutdown can wait for it, and any error is handed to the
+// configured BatchErrorHandler -- retry, dead-lettering and metrics are the caller's to decide, but
+// they need to be told about the failure first.
 func (bp *Batch) flush() {
-	if len(bp.buffer) == 0 {
+	if len(bp.buffer) == 0 || bp.batchProcessor == nil {
 		return
 	}
 
@@ -295,14 +373,12 @@ func (bp *Batch) flush() {
 	bp.buffer = bp.buffer[:0] // Clear buffer (keep capacity)
 
 	// Process asynchronously to avoid blocking
+	bp.flushWg.Add(1)
 	go func() {
-		if err := bp.batchProcessor(bp.ctx, events); err != nil {
-			// ignore error and don't block
-			//todo: consider:
-			// - Retry logic
-			// - Dead letter queue
-			// - Metrics/alerting
-			// - Circuit breaker pattern
+		defer bp.flushWg.Done()
+
+		if err := bp.batchProcessor(bp.ctx, events); err != nil && bp.onError != nil {
+			bp.onError(bp.ctx, events, err)
 		}
 	}()
 }

@@ -12,6 +12,7 @@ import (
 
 	"github.com/seyallius/gossip/v2/event"
 	"github.com/seyallius/gossip/v2/event/bus"
+	goserr "github.com/seyallius/gossip/v2/event/errors"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -382,4 +383,153 @@ func TestBatchProcessor_MultipleBatches(t *testing.T) {
 	defer mu.Unlock()
 
 	assert.Equal(t, 23, len(allEvents))
+}
+
+// ------------------------------------------ Batch Regressions ------------------------------------- //
+
+// TestBatchProcessor_ZeroFlushPeriod covers the size-only configuration the BatchConfig docs
+// recommend. time.NewTicker panics on a non-positive interval, so a FlushPeriod of 0 took the
+// process down from the periodic goroutine moments after construction.
+func TestBatchProcessor_ZeroFlushPeriod(t *testing.T) {
+	var batches atomic.Int32
+	config := BatchConfig{BatchSize: 3, FlushPeriod: 0}
+
+	bp := NewBatchProcessor("test.event", config, func(ctx context.Context, events []*event.Event) error {
+		batches.Add(1)
+		return nil
+	})
+
+	for i := 0; i < 3; i++ {
+		assert.True(t, bp.Add(event.NewEvent("test.event", i)))
+	}
+	time.Sleep(50 * time.Millisecond)
+	bp.Shutdown()
+
+	assert.Equal(t, int32(1), batches.Load(), "size-only batching should still flush on BatchSize")
+}
+
+// TestBatchProcessor_ZeroBatchSize covers the other degenerate size. len(buffer) >= 0 holds for
+// every Add, so a zero BatchSize flushed a batch of one per event -- the opposite of batching.
+func TestBatchProcessor_ZeroBatchSize(t *testing.T) {
+	var batches atomic.Int32
+	config := BatchConfig{BatchSize: 0, FlushPeriod: time.Hour}
+
+	bp := NewBatchProcessor("test.event", config, func(ctx context.Context, events []*event.Event) error {
+		batches.Add(1)
+		return nil
+	})
+	defer bp.Shutdown()
+
+	assert.Equal(t, defaultBatchSize, bp.batchSize, "a non-positive BatchSize should fall back to the default")
+
+	for i := 0; i < 5; i++ {
+		require.True(t, bp.Add(event.NewEvent("test.event", i)))
+	}
+	time.Sleep(50 * time.Millisecond)
+
+	assert.Zero(t, batches.Load(), "5 events should not reach the default batch size")
+}
+
+// TestBatchProcessor_ShutdownWaitsForFinalBatch covers the promise in Shutdown's own documentation.
+// flush() hands the batch to a goroutine, so Shutdown used to return while the last batch was still
+// being written and the process could exit before it landed.
+func TestBatchProcessor_ShutdownWaitsForFinalBatch(t *testing.T) {
+	var completed atomic.Bool
+	config := BatchConfig{BatchSize: 100, FlushPeriod: time.Hour}
+
+	bp := NewBatchProcessor("test.event", config, func(ctx context.Context, events []*event.Event) error {
+		time.Sleep(80 * time.Millisecond)
+		completed.Store(true)
+		return nil
+	})
+
+	require.True(t, bp.Add(event.NewEvent("test.event", "payload")))
+	bp.Shutdown()
+
+	assert.True(t, completed.Load(), "Shutdown should not return before the final batch is processed")
+}
+
+// TestBatchProcessor_ShutdownLeavesProcessorContextLive covers the context that final batch runs
+// under. Shutdown cancelled it first, so the batch it exists to save was handed an already-cancelled
+// context and every context-aware write inside it failed instantly.
+func TestBatchProcessor_ShutdownLeavesProcessorContextLive(t *testing.T) {
+	ctxErr := make(chan error, 1)
+	config := BatchConfig{BatchSize: 100, FlushPeriod: time.Hour}
+
+	bp := NewBatchProcessor("test.event", config, func(ctx context.Context, events []*event.Event) error {
+		ctxErr <- ctx.Err()
+		return nil
+	})
+
+	require.True(t, bp.Add(event.NewEvent("test.event", "payload")))
+	bp.Shutdown()
+
+	select {
+	case err := <-ctxErr:
+		assert.NoError(t, err, "the final batch should run under a live context")
+	default:
+		t.Fatal("expected the buffered event to be processed during shutdown")
+	}
+}
+
+// TestBatchProcessor_ShutdownIsIdempotent covers a second Shutdown, which used to close an
+// already-closed stop signal.
+func TestBatchProcessor_ShutdownIsIdempotent(t *testing.T) {
+	config := BatchConfig{BatchSize: 10, FlushPeriod: 10 * time.Millisecond}
+
+	bp := NewBatchProcessor("test.event", config, func(ctx context.Context, events []*event.Event) error {
+		return nil
+	})
+
+	bp.Shutdown()
+	bp.Shutdown()
+}
+
+// TestBatchProcessor_AddAfterShutdown covers events arriving once the batch is stopped. Nothing is
+// left to flush them, so buffering them would only lose them more quietly.
+func TestBatchProcessor_AddAfterShutdown(t *testing.T) {
+	config := BatchConfig{BatchSize: 10, FlushPeriod: time.Hour}
+
+	bp := NewBatchProcessor("test.event", config, func(ctx context.Context, events []*event.Event) error {
+		return nil
+	})
+	bp.Shutdown()
+
+	assert.False(t, bp.Add(event.NewEvent("test.event", "payload")), "a stopped batch should refuse events")
+
+	err := bp.AsEventProcessor()(context.Background(), event.NewEvent("test.event", "payload"))
+	assert.Error(t, err, "the bus should learn that the event went nowhere")
+}
+
+// TestBatchProcessor_OnErrorReceivesFailures covers the error path, which used to end in an empty if
+// body and a todo: a BatchProcessor could fail on every batch and nothing could tell.
+func TestBatchProcessor_OnErrorReceivesFailures(t *testing.T) {
+	failure := goserr.NewProcessingErrorf("bulk insert rejected")
+
+	handled := make(chan []*event.Event, 1)
+	var handledErr error
+	config := BatchConfig{
+		BatchSize:   2,
+		FlushPeriod: time.Hour,
+		OnError: func(ctx context.Context, events []*event.Event, err error) {
+			handledErr = err
+			handled <- events
+		},
+	}
+
+	bp := NewBatchProcessor("test.event", config, func(ctx context.Context, events []*event.Event) error {
+		return failure
+	})
+	defer bp.Shutdown()
+
+	require.True(t, bp.Add(event.NewEvent("test.event", 1)))
+	require.True(t, bp.Add(event.NewEvent("test.event", 2)))
+
+	select {
+	case events := <-handled:
+		assert.Len(t, events, 2, "the handler should receive the batch that failed")
+		assert.ErrorIs(t, handledErr, failure)
+	case <-time.After(time.Second):
+		t.Fatal("expected the error handler to be called")
+	}
 }
