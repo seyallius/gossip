@@ -12,6 +12,7 @@ import (
 
 	gossip "github.com/seyallius/gossip/v2/event"
 	"github.com/seyallius/gossip/v2/event/bus"
+	goserr "github.com/seyallius/gossip/v2/event/errors"
 	"github.com/seyallius/gossip/v2/event/middleware"
 )
 
@@ -138,7 +139,11 @@ func (s *AuthService) RegisterUser(email, username, ipAddress string) error {
 		WithMetadata("source", "api").
 		WithMetadata("version", "v1")
 
-	s.bus.Publish(event)
+	// Publish reports whether the bus accepted the event; false means a full buffer or a bus that is
+	// shutting down. An audit-relevant event is worth checking.
+	if !s.bus.Publish(event) {
+		return goserr.NewProcessingErrorf("event bus rejected the %s event", UserRegistered)
+	}
 
 	return nil
 }
@@ -194,7 +199,10 @@ func main() {
 		BufferSize: 1000,
 	}
 	eventBus := bus.NewEventBus(config)
-	defer eventBus.Shutdown()
+	// Shutdown drains whatever the bus has already accepted before it returns, so the demo does not
+	// have to sleep at the end and hope. It reports an error only if that drain outran the timeout.
+	// Shutdown is idempotent, so this is a safety net for the explicit one at the end of the demo.
+	defer func() { _ = eventBus.Shutdown() }()
 
 	// Register handlers with middleware
 	eventBus.Subscribe(
@@ -223,7 +231,9 @@ func main() {
 	// Simulate user activities
 	log.Println("=== Starting Auth Service Demo ===")
 
-	authService.RegisterUser("john@example.com", "john_doe", "192.168.1.100")
+	if err := authService.RegisterUser("john@example.com", "john_doe", "192.168.1.100"); err != nil {
+		log.Printf("[Service] registration event was not published: %v", err)
+	}
 	time.Sleep(100 * time.Millisecond)
 
 	authService.Login("john_doe", "password123", "192.168.1.100", "Mozilla/5.0")
@@ -232,6 +242,11 @@ func main() {
 	authService.ChangePassword("user_123", "oldpass", "newpass")
 	time.Sleep(100 * time.Millisecond)
 
+	// Shutdown drains everything the bus has already accepted, so the summary below prints after the
+	// handlers have run. This is what the sleeps in this demo used to approximate.
+	if err := eventBus.Shutdown(); err != nil {
+		log.Printf("[Bus] shutdown did not finish cleanly: %v", err)
+	}
+
 	log.Println("=== Demo Complete ===")
-	time.Sleep(500 * time.Millisecond)
 }

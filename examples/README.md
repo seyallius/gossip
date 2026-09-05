@@ -175,8 +175,9 @@ var eventBus *bus.EventBus
 
 func initEventBus() {
 	config := &bus.Config{
-		Workers:    10,   // Adjust based on load
-		BufferSize: 1000, // Adjust based on event volume
+		Workers:         10,              // Adjust based on load
+		BufferSize:      1000,            // Adjust based on event volume
+		ShutdownTimeout: 5 * time.Second, // How long Shutdown waits for the backlog to drain
 	}
 
 	eventBus = bus.NewEventBus(config)
@@ -185,7 +186,14 @@ func initEventBus() {
 
 func main() {
 	initEventBus()
-	defer eventBus.Shutdown()
+
+	// Shutdown drains the backlog before returning, and reports an error if that outran
+	// ShutdownTimeout. It is idempotent, so a second call anywhere is harmless.
+	defer func() {
+		if err := eventBus.Shutdown(); err != nil {
+			log.Printf("event bus shutdown did not finish cleanly: %v", err)
+		}
+	}()
 
 	// Register handlers
 	registerProcessors()
@@ -261,7 +269,11 @@ func (s *UserService) CreateUser(email, username string) error {
 		WithMetadata("source", "api").
 		WithMetadata("request_id", getRequestID())
 
-	s.eventBus.Publish(event)
+	// Publish never blocks, so it reports back instead of dropping silently: false means the buffer
+	// was full or the bus is shutting down.
+	if !s.eventBus.Publish(event) {
+		return goserr.NewProcessingErrorf("event bus rejected the %s event", events.UserCreated)
+	}
 
 	return nil
 }
@@ -498,7 +510,13 @@ batchProcessor := func(ctx context.Context, events []*event.Event) error {
 }
 
 processor := gossip.NewBatchProcessor(OrderCreated, batchConfig, batchProcessor)
-defer processor.Shutdown()
+
+// Order matters: the bus feeds the batch, so drain the bus first. Deferring both would run them in
+// the opposite order and the batch would refuse the tail of the backlog.
+defer func() {
+    _ = bus.Shutdown()
+    processor.Shutdown()
+}()
 
 bus.Subscribe(OrderCreated, processor.AsEventProcessor())
 ```
@@ -681,10 +699,17 @@ func main() {
 ```go
 func main() {
     bus := gossip.NewEventBus(config)
-    defer bus.Shutdown() // Graceful cleanup
+    defer func() {
+        // Drains the backlog, then reports if that outran ShutdownTimeout
+        if err := bus.Shutdown(); err != nil {
+            log.Printf("event bus shutdown did not finish cleanly: %v", err)
+        }
+    }()
     // ... application code ...
 }
 ```
+
+Without it, everything still sitting in the buffer when the process exits is simply lost.
 
 ### 4. Circular Event Dependencies
 

@@ -13,6 +13,7 @@ import (
 	gossip "github.com/seyallius/gossip/v2/event"
 	"github.com/seyallius/gossip/v2/event/batch"
 	"github.com/seyallius/gossip/v2/event/bus"
+	goserr "github.com/seyallius/gossip/v2/event/errors"
 	"github.com/seyallius/gossip/v2/event/filter"
 	"github.com/seyallius/gossip/v2/event/middleware"
 )
@@ -108,7 +109,12 @@ func (s *OrderService) CreateOrder(customerID string, items []string, amount flo
 	event := gossip.NewEvent(OrderCreated, eventData).
 		WithMetadata("source", "web")
 
-	s.bus.Publish(event)
+	// Publish never blocks, so it reports back rather than silently dropping when the buffer is
+	// full. An order confirmation is worth knowing about, so turn a drop into an error the caller
+	// can retry or log.
+	if !s.bus.Publish(event) {
+		return goserr.NewProcessingErrorf("event bus rejected order %s", orderID)
+	}
 
 	return nil
 }
@@ -122,15 +128,23 @@ func main() {
 		BufferSize: 2000,
 	}
 	eventBus := bus.NewEventBus(config)
-	defer eventBus.Shutdown()
 
 	// Create batch processor for email notifications
 	batchConfig := batch.BatchConfig{
 		BatchSize:   10,
 		FlushPeriod: 5 * time.Second,
+		OnError: func(ctx context.Context, events []*gossip.Event, err error) {
+			log.Printf("[Email] batch of %d confirmations failed: %v", len(events), err)
+		},
 	}
 	batchProcessor := batch.NewBatchProcessor(OrderCreated, batchConfig, batchEmailProcessor)
-	defer batchProcessor.Shutdown()
+
+	// Order matters: the bus feeds the batch, so the bus has to drain first. Deferring both would
+	// run them in the opposite order and the batch would refuse the tail of the backlog.
+	defer func() {
+		_ = eventBus.Shutdown()
+		batchProcessor.Shutdown()
+	}()
 
 	// Register handlers with various patterns
 
@@ -159,20 +173,34 @@ func main() {
 	// Simulate order activities
 	log.Println("=== Starting E-commerce Demo ===")
 
-	orderService.CreateOrder("customer_1", []string{"laptop", "mouse"}, 1299.99)
+	createOrder(orderService, "customer_1", []string{"laptop", "mouse"}, 1299.99)
 	time.Sleep(100 * time.Millisecond)
 
-	orderService.CreateOrder("customer_2", []string{"keyboard"}, 79.99)
+	createOrder(orderService, "customer_2", []string{"keyboard"}, 79.99)
 	time.Sleep(100 * time.Millisecond)
 
-	orderService.CreateOrder("customer_3", []string{"monitor"}, 449.99)
+	createOrder(orderService, "customer_3", []string{"monitor"}, 449.99)
 	time.Sleep(100 * time.Millisecond)
 
 	// Simulate multiple orders to trigger batch processing
 	for i := 0; i < 5; i++ {
-		orderService.CreateOrder(fmt.Sprintf("customer_%d", i+4), []string{"item"}, 50.0)
+		createOrder(orderService, fmt.Sprintf("customer_%d", i+4), []string{"item"}, 50.0)
 	}
 
-	log.Println("=== Demo Complete - Waiting for batch flush ===")
-	time.Sleep(6 * time.Second)
+	// No waiting for the 5s flush period: shutting the bus down drains the orders into the batch,
+	// and shutting the batch down flushes whatever is left and blocks until it has been sent.
+	if err := eventBus.Shutdown(); err != nil {
+		log.Printf("[Bus] shutdown did not finish cleanly: %v", err)
+	}
+	batchProcessor.Shutdown()
+
+	log.Println("=== Demo Complete ===")
+}
+
+// createOrder places an order and reports a rejected publish rather than discarding it, which is the
+// point of Publish returning at all.
+func createOrder(orderService *OrderService, customerID string, items []string, amount float64) {
+	if err := orderService.CreateOrder(customerID, items, amount); err != nil {
+		log.Printf("[Service] order for %s was not published: %v", customerID, err)
+	}
 }

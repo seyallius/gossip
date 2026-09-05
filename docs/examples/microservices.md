@@ -9,7 +9,6 @@ The microservices example shows:
 - Service-to-service decoupling
 - Multiple services reacting to same event
 - Event chaining (service publishes events other services consume)
-- Using Redis provider for distributed systems
 
 ## Key Concepts Demonstrated
 
@@ -139,10 +138,9 @@ func (s *EmailService) registerProcessors() {
 
 // handleUserCreated sends welcome email to new users.
 func (s *EmailService) handleUserCreated(ctx context.Context, event *gossip.Event) error {
-	//data := event.Data.(*UserCreatedEvent) // since using redis, it's a map[string]any
-	data := event.Data.(map[string]any)
+	data := event.Data.(*UserCreatedEvent)
 
-	log.Printf("[EmailService] Sending welcome email to %s", data["Email"])
+	log.Printf("[EmailService] Sending welcome email to %s", data.Email)
 
 	// Send email logic...
 	time.Sleep(50 * time.Millisecond)
@@ -181,10 +179,9 @@ func (s *NotificationService) registerProcessors() {
 
 // handleUserCreated sends push notification to new users.
 func (s *NotificationService) handleUserCreated(ctx context.Context, event *gossip.Event) error {
-	//data := event.Data.(*UserCreatedEvent) // since using redis, it's a map[string]any
-	data := event.Data.(map[string]any)
+	data := event.Data.(*UserCreatedEvent)
 
-	log.Printf("[NotificationService] Sending push notification to user %s", data["UserId"])
+	log.Printf("[NotificationService] Sending push notification to user %s", data.UserID)
 
 	// Send notification logic...
 
@@ -230,17 +227,15 @@ func (s *AnalyticsService) trackEvent(ctx context.Context, event *gossip.Event) 
 
 ```go
 func main() {
-	// Shared event bus across services - using Redis provider for true microservices
+	// Shared event bus across services. Note that this bus is in-process: the "microservices" here
+	// are packages in one binary, decoupled from each other but not distributed.
 	config := &bus.Config{
-		Driver:     "redis", // Use Redis for distributed systems
 		Workers:    10,
 		BufferSize: 1000,
-		RedisAddr:  "localhost:6379", // Configure for your Redis instance
-		RedisPwd:   "",
-		RedisDB:    0,
 	}
 	eventBus := bus.NewEventBus(config)
-	defer eventBus.Shutdown()
+	// Shutdown is idempotent, so this is a safety net for the explicit one at the end of the demo.
+	defer func() { _ = eventBus.Shutdown() }()
 
 	// Initialize services - they self-register handlers
 	userService := NewUserService(eventBus)
@@ -257,8 +252,13 @@ func main() {
 	userService.CreateUser("bob@example.com", "bob")
 	time.Sleep(200 * time.Millisecond)
 
+	// Shutdown drains everything the bus has already accepted, so the summary below prints after the
+	// handlers have run. This is what the sleeps in this demo used to approximate.
+	if err := eventBus.Shutdown(); err != nil {
+		log.Printf("[Bus] shutdown did not finish cleanly: %v", err)
+	}
+
 	log.Println("=== Demo Complete ===")
-	time.Sleep(500 * time.Millisecond)
 }
 ```
 
@@ -271,7 +271,7 @@ cd examples/microservices
 go run main.go
 ```
 
-**Note:** This example uses the Redis provider, so you'll need to have Redis running locally on `localhost:6379` for the example to work properly.
+**Note:** The bus is in-process, so this example needs nothing running alongside it.
 
 ## Key Takeaways
 
@@ -279,14 +279,17 @@ go run main.go
 
 2. **Scalability**: New services can be added that react to existing events without changing the original services.
 
-3. **Resilience**: If one service is down, others continue to function (eventually consistent).
+3. **Resilience**: A failure in one processor does not stop the others; the bus collects errors per subscription rather than aborting the dispatch.
 
 4. **Flexibility**: Services can react to events in their own way and at their own pace.
 
 ## Best Practices Demonstrated
 
-- Use Redis provider for distributed systems
 - Implement self-registering services for cleaner initialization
 - Use hierarchical event naming for cross-service events
-- Handle type assertions carefully when using Redis (data becomes map[string]any)
+- Use `utils.CastEventData` rather than a bare type assertion, so a mismatched payload is an error instead of a panic
 - Design services to be autonomous and not depend on immediate responses from other services
+
+Note that this bus is in-process. The services here are decoupled from each other, but they share a
+binary: there is no network hop and no cross-process delivery. Gossip is a way to structure a single
+application around events, not a message broker.

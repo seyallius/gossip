@@ -167,7 +167,8 @@ func main() {
 		BufferSize: 1000,
 	}
 	eventBus := bus.NewEventBus(config)
-	defer eventBus.Shutdown()
+	// Shutdown is idempotent, so this is a safety net for the explicit one at the end of the demo.
+	defer func() { _ = eventBus.Shutdown() }()
 
 	// Initialize services - they self-register handlers
 	userService := NewUserService(eventBus)
@@ -184,6 +185,11 @@ func main() {
 	userService.CreateUser("bob@example.com", "bob")
 	time.Sleep(200 * time.Millisecond)
 
+	// Shutdown drains everything the bus has already accepted, so the summary below prints after the
+	// handlers have run. This is what the sleeps in this demo used to approximate.
+	if err := eventBus.Shutdown(); err != nil {
+		log.Printf("[Bus] shutdown did not finish cleanly: %v", err)
+	}
+
 	log.Println("=== Demo Complete ===")
-	time.Sleep(500 * time.Millisecond)
 }

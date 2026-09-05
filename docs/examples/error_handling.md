@@ -172,18 +172,10 @@ func WithErrorHandling() middleware.Middleware {
 
 ```go
 func main() {
-	// Initialize event bus with default in-memory provider
-	config := &bus.Config{
-		Driver:     "memory", // Use "redis" for distributed systems
-		Workers:    10,
-		BufferSize: 1000,
-		// For Redis provider, configure:
-		// RedisAddr:  "localhost:6379",
-		// RedisPwd:   "",
-		// RedisDB:    0,
-	}
-	eventBus := bus.NewEventBus(config)
-	defer eventBus.Shutdown()
+	// Initialize event bus
+	eventBus := bus.NewEventBus(bus.DefaultConfig())
+	// Shutdown is idempotent, so this is a safety net for the explicit one at the end of the demo.
+	defer func() { _ = eventBus.Shutdown() }()
 
 	// Subscribe processors with error handling middleware
 	eventBus.Subscribe(
@@ -225,8 +217,10 @@ func main() {
 		Email:    "charlie@example.com",
 	}))
 
-	// Wait for events to be processed
-	time.Sleep(2 * time.Second)
+	// Shutdown drains everything the bus has already accepted, so there is nothing to sleep for.
+	if err := eventBus.Shutdown(); err != nil {
+		log.Printf("[Bus] shutdown did not finish cleanly: %v", err)
+	}
 }
 ```
 

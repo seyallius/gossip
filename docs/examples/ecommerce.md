@@ -173,9 +173,18 @@ func (s *OrderService) CreateOrder(customerID string, items []string, amount flo
 batchConfig := batch.BatchConfig{
 	BatchSize:   10,
 	FlushPeriod: 5 * time.Second,
+	OnError: func(ctx context.Context, events []*gossip.Event, err error) {
+		log.Printf("[Email] batch of %d confirmations failed: %v", len(events), err)
+	},
 }
 batchProcessor := batch.NewBatchProcessor(OrderCreated, batchConfig, batchEmailProcessor)
-defer batchProcessor.Shutdown()
+
+// Order matters: the bus feeds the batch, so the bus has to drain first. Deferring both would run
+// them in the opposite order and the batch would refuse the tail of the backlog.
+defer func() {
+	_ = eventBus.Shutdown()
+	batchProcessor.Shutdown()
+}()
 
 // Register batch handler
 eventBus.Subscribe(OrderCreated, batchProcessor.AsEventProcessor())
@@ -196,18 +205,12 @@ eventBus.Subscribe(OrderCreated, batchProcessor.AsEventProcessor())
 
 ```go
 func main() {
-	// Initialize event bus with default in-memory provider
+	// Initialize event bus
 	config := &bus.Config{
-		Driver:     "memory", // Use "redis" for distributed systems
 		Workers:    15,
 		BufferSize: 2000,
-		// For Redis provider, configure:
-		// RedisAddr:  "localhost:6379",
-		// RedisPwd:   "",
-		// RedisDB:    0,
 	}
 	eventBus := bus.NewEventBus(config)
-	defer eventBus.Shutdown()
 
 	// ... processor registrations
 

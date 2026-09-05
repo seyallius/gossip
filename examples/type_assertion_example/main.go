@@ -9,7 +9,6 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"time"
 
 	gossip "github.com/seyallius/gossip/v2/event"
 	"github.com/seyallius/gossip/v2/event/bus"
@@ -45,7 +44,8 @@ func main() {
 
 	// Initialize event bus with default in-memory provider
 	eventBus := bus.NewEventBus(bus.DefaultConfig())
-	defer eventBus.Shutdown()
+	// Shutdown is idempotent, so this is a safety net for the explicit one at the end of the demo.
+	defer func() { _ = eventBus.Shutdown() }()
 
 	// Subscribe processors
 	eventBus.Subscribe(UserCreated, func(ctx context.Context, event *gossip.Event) error {
@@ -82,7 +82,13 @@ func main() {
 	eventBus.Publish(gossip.NewEvent(UserCreated, typedNil))
 
 	fmt.Println("\nProcessing events...")
-	time.Sleep(500 * time.Millisecond)
+
+	// Shutdown drains everything the bus has already accepted, so the four events above are all
+	// processed by the time it returns -- no sleeping and hoping.
+	if err := eventBus.Shutdown(); err != nil {
+		log.Printf("[Bus] shutdown did not finish cleanly: %v", err)
+	}
+
 	fmt.Println("Demo complete!")
 }
 

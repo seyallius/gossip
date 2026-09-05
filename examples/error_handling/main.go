@@ -202,7 +202,8 @@ func WithErrorHandling() middleware.Middleware {
 func main() {
 	// Initialize event bus
 	eventBus := bus.NewEventBus(bus.DefaultConfig())
-	defer eventBus.Shutdown()
+	// Shutdown is idempotent, so this is a safety net for the explicit one at the end of the demo.
+	defer func() { _ = eventBus.Shutdown() }()
 
 	// Subscribe processors with error handling middleware
 	eventBus.Subscribe(
@@ -266,8 +267,11 @@ func main() {
 		Email:    "diana@example.com",
 	}))
 
-	// Wait for events to be processed
-	time.Sleep(2 * time.Second)
+	// Shutdown drains everything the bus has already accepted, so the summary below prints after the
+	// handlers have run. This is what the sleeps in this demo used to approximate.
+	if err := eventBus.Shutdown(); err != nil {
+		log.Printf("[Bus] shutdown did not finish cleanly: %v", err)
+	}
 
 	fmt.Println("\nDemonstration complete! Check the logs to see how different error types were handled.")
 }

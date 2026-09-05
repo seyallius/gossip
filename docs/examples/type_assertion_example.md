@@ -137,18 +137,14 @@ func handleError(err error) {
 func main() {
 	fmt.Println("Demonstrating type assertion error handling (similar to redis.Nil pattern)...")
 
-	// Initialize event bus with default in-memory provider
+	// Initialize event bus
 	config := &bus.Config{
-		Driver:     "memory", // Use "redis" for distributed systems
 		Workers:    10,
 		BufferSize: 1000,
-		// For Redis provider, configure:
-		// RedisAddr:  "localhost:6379",
-		// RedisPwd:   "",
-		// RedisDB:    0,
 	}
 	eventBus := bus.NewEventBus(config)
-	defer eventBus.Shutdown()
+	// Shutdown is idempotent, so this is a safety net for the explicit one at the end of the demo.
+	defer func() { _ = eventBus.Shutdown() }()
 
 	// Subscribe processors
 	eventBus.Subscribe(UserCreated, func(ctx context.Context, event *gossip.Event) error {
@@ -179,8 +175,13 @@ func main() {
 	fmt.Println("\n3. Publishing event with nil data:")
 	eventBus.Publish(gossip.NewEvent(UserCreated, nil))
 
-	// Wait for processing
 	fmt.Println("\nProcessing events...")
+
+	// Shutdown drains everything the bus has already accepted, so all four events above are
+	// processed by the time it returns.
+	if err := eventBus.Shutdown(); err != nil {
+		log.Printf("[Bus] shutdown did not finish cleanly: %v", err)
+	}
 }
 ```
 

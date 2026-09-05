@@ -49,12 +49,17 @@ func TestEmailProcessorWithMock(t *testing.T) {
 
 ## Integration Testing
 
+> **Synchronise on `Shutdown()`, not on `time.Sleep`.** `Shutdown` drains everything the bus has
+> already accepted and returns once the workers are done, so a test that shuts the bus down before
+> asserting sees every published event -- with no sleep to tune and nothing to go flaky under load.
+> `PublishSync` is the other option when a test wants the handler errors as well.
+
 ### Testing Event Flow
 
 ```go
 func TestUserCreationFlow(t *testing.T) {
     bus := gossip.NewEventBus(gossip.DefaultConfig())
-    defer bus.Shutdown()
+    defer bus.Shutdown() // idempotent: safe alongside the explicit drain below
     
     // Track handler executions
     var emailSent, auditLogged, metricsRecorded bool
@@ -76,10 +81,10 @@ func TestUserCreationFlow(t *testing.T) {
     
     // Publish event
     event := gossip.NewEvent(UserCreated, &UserData{UserID: "123"})
-    bus.Publish(event)
+    require.True(t, bus.Publish(event))
     
-    // Wait for async processing
-    time.Sleep(100 * time.Millisecond)
+    // Drain: Shutdown returns once every accepted event has been processed
+    require.NoError(t, bus.Shutdown())
     
     assert.True(t, emailSent)
     assert.True(t, auditLogged)
@@ -92,7 +97,7 @@ func TestUserCreationFlow(t *testing.T) {
 ```go
 func TestEventOrdering(t *testing.T) {
     bus := gossip.NewEventBus(gossip.DefaultConfig())
-    defer bus.Shutdown()
+    defer bus.Shutdown() // idempotent: safe alongside the explicit drain below
     
     var events []string
     var mu sync.Mutex
@@ -112,7 +117,7 @@ func TestEventOrdering(t *testing.T) {
     bus.Publish(gossip.NewEvent(EventB, nil))
     bus.Publish(gossip.NewEvent(EventC, nil))
     
-    time.Sleep(100 * time.Millisecond)
+    require.NoError(t, bus.Shutdown())
     
     assert.Equal(t, 3, len(events))
 }
@@ -227,24 +232,26 @@ func TestBatchProcessor(t *testing.T) {
     config := gossip.BatchConfig{
         BatchSize:   3,
         FlushPeriod: 1 * time.Second,
+        OnError: func(ctx context.Context, events []*gossip.Event, err error) {
+            t.Errorf("batch of %d failed: %v", len(events), err)
+        },
     }
     
     processor := gossip.NewBatchProcessor(OrderCreated, config, batchProcessor)
-    defer processor.Shutdown()
     
     // Add events
     for i := 0; i < 5; i++ {
-        processor.Add(gossip.NewEvent(OrderCreated, i))
+        require.True(t, processor.Add(gossip.NewEvent(OrderCreated, i)))
     }
     
-    // Wait for batch processing
-    time.Sleep(100 * time.Millisecond)
+    // Shutdown flushes the partial batch and blocks until the processor has handled it
+    processor.Shutdown()
     
     mu.Lock()
     count := len(processedEvents)
     mu.Unlock()
     
-    assert.GreaterOrEqual(t, count, 3, "Should process at least one batch")
+    assert.Equal(t, 5, count, "every added event should be processed")
 }
 ```
 
@@ -316,6 +323,8 @@ func TestWithHelper(t *testing.T) {
     assert.True(t, WaitForEvent(1*time.Second, func() bool {
         return executed
     }))
+    // For a bus you own, draining it with Shutdown() is simpler and exact. Reach for a polling
+    // helper only when something outside the bus has to settle as well.
 }
 ```
 
@@ -369,9 +378,9 @@ func TestGracefulShutdown(t *testing.T) {
         bus.Publish(gossip.NewEvent(UserCreated, nil))
     }
     
-    // Shutdown waits for processing
-    bus.Shutdown()
+    // Shutdown drains the backlog: every accepted event is processed before it returns
+    require.NoError(t, bus.Shutdown())
     
-    assert.Greater(t, atomic.LoadInt32(&processed), int32(0))
+    assert.Equal(t, int32(10), atomic.LoadInt32(&processed))
 }
 ```

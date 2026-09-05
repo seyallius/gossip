@@ -176,7 +176,11 @@ func (s *AuthService) RegisterUser(email, username, ipAddress string) error {
 		WithMetadata("source", "api").
 		WithMetadata("version", "v1")
 
-	s.bus.Publish(event)
+	// Publish reports whether the bus accepted the event; false means a full buffer or a bus that is
+	// shutting down. An audit-relevant event is worth checking.
+	if !s.bus.Publish(event) {
+		return goserr.NewProcessingErrorf("event bus rejected the %s event", UserRegistered)
+	}
 
 	return nil
 }
@@ -186,18 +190,14 @@ func (s *AuthService) RegisterUser(email, username, ipAddress string) error {
 
 ```go
 func main() {
-	// Initialize event bus with default in-memory provider
+	// Initialize event bus
 	config := &bus.Config{
-		Driver:     "memory", // Use "redis" for distributed systems
 		Workers:    10,
 		BufferSize: 1000,
-		// For Redis provider, configure:
-		// RedisAddr:  "localhost:6379",
-		// RedisPwd:   "",
-		// RedisDB:    0,
 	}
 	eventBus := bus.NewEventBus(config)
-	defer eventBus.Shutdown()
+	// Shutdown is idempotent, so this is a safety net for the explicit one at the end of the demo.
+	defer func() { _ = eventBus.Shutdown() }()
 
 	// Register handlers with middleware
 	eventBus.Subscribe(
@@ -215,7 +215,9 @@ func main() {
 	authService := NewAuthService(eventBus)
 
 	// Simulate user activities
-	authService.RegisterUser("john@example.com", "john_doe", "192.168.1.100")
+	if err := authService.RegisterUser("john@example.com", "john_doe", "192.168.1.100"); err != nil {
+		log.Printf("[Service] registration event was not published: %v", err)
+	}
 	authService.Login("john_doe", "password123", "192.168.1.100", "Mozilla/5.0")
 	authService.ChangePassword("user_123", "oldpass", "newpass")
 }
