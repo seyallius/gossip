@@ -8,6 +8,7 @@ package errors
 import (
 	"errors"
 	"fmt"
+	"strings"
 )
 
 // -------------------------------------------- Error Types --------------------------------------------
@@ -20,10 +21,7 @@ type RetryableError struct {
 }
 
 func (e *RetryableError) Error() string {
-	if e.Message != "" {
-		return fmt.Sprintf("retryable error: %s: %v", e.Message, e.Err)
-	}
-	return fmt.Sprintf("retryable error: %v", e.Err)
+	return joinErrorParts("retryable error", e.Message, causeText(e.Err))
 }
 
 func (e *RetryableError) Unwrap() error {
@@ -39,14 +37,11 @@ type ValidationError struct {
 }
 
 func (e *ValidationError) Error() string {
-	if e.Field != "" && e.Message != "" {
-		return fmt.Sprintf("validation error on field '%s': %s: %v", e.Field, e.Message, e.Err)
-	} else if e.Field != "" {
-		return fmt.Sprintf("validation error on field '%s': %v", e.Field, e.Err)
-	} else if e.Message != "" {
-		return fmt.Sprintf("validation error: %s: %v", e.Message, e.Err)
+	prefix := "validation error"
+	if e.Field != "" {
+		prefix = fmt.Sprintf("validation error on field '%s'", e.Field)
 	}
-	return fmt.Sprintf("validation error: %v", e.Err)
+	return joinErrorParts(prefix, e.Message, causeText(e.Err))
 }
 
 func (e *ValidationError) Unwrap() error {
@@ -61,10 +56,7 @@ type ProcessingError struct {
 }
 
 func (e *ProcessingError) Error() string {
-	if e.Message != "" {
-		return fmt.Sprintf("processing error: %s: %v", e.Message, e.Err)
-	}
-	return fmt.Sprintf("processing error: %v", e.Err)
+	return joinErrorParts("processing error", e.Message, causeText(e.Err))
 }
 
 func (e *ProcessingError) Unwrap() error {
@@ -80,14 +72,11 @@ type TimeoutError struct {
 }
 
 func (e *TimeoutError) Error() string {
-	if e.Timeout != "" && e.Message != "" {
-		return fmt.Sprintf("timeout error after %s: %s: %v", e.Timeout, e.Message, e.Err)
-	} else if e.Timeout != "" {
-		return fmt.Sprintf("timeout error after %s: %v", e.Timeout, e.Err)
-	} else if e.Message != "" {
-		return fmt.Sprintf("timeout error: %s: %v", e.Message, e.Err)
+	prefix := "timeout error"
+	if e.Timeout != "" {
+		prefix = fmt.Sprintf("timeout error after %s", e.Timeout)
 	}
-	return fmt.Sprintf("timeout error: %v", e.Err)
+	return joinErrorParts(prefix, e.Message, causeText(e.Err))
 }
 
 func (e *TimeoutError) Unwrap() error {
@@ -102,14 +91,35 @@ type FatalError struct {
 }
 
 func (e *FatalError) Error() string {
-	if e.Message != "" {
-		return fmt.Sprintf("fatal error: %s: %v", e.Message, e.Err)
-	}
-	return fmt.Sprintf("fatal error: %v", e.Err)
+	return joinErrorParts("fatal error", e.Message, causeText(e.Err))
 }
 
 func (e *FatalError) Unwrap() error {
 	return e.Err
+}
+
+// -------------------------------------------- Message Formatting --------------------------------------------
+
+// joinErrorParts renders "prefix: message: cause", dropping any part that is empty.
+//
+// Skipping the empty parts is the point: composing the message with a fixed format string rendered a
+// nil cause as the literal "<nil>" and left a dangling separator behind an absent message.
+func joinErrorParts(parts ...string) string {
+	present := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if part != "" {
+			present = append(present, part)
+		}
+	}
+	return strings.Join(present, ": ")
+}
+
+// causeText renders a wrapped cause, or an empty string when there is none.
+func causeText(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
 }
 
 // -------------------------------------------- Error Creation Functions --------------------------------------------
@@ -123,10 +133,10 @@ func NewRetryableError(err error, message string) *RetryableError {
 }
 
 // NewRetryableErrorf creates a new RetryableError with formatted message.
+// The message goes into Err, so the format string may use %w to wrap a cause.
 func NewRetryableErrorf(format string, args ...any) *RetryableError {
 	return &RetryableError{
-		Err:     fmt.Errorf(format, args...),
-		Message: fmt.Sprintf(format, args...),
+		Err: fmt.Errorf(format, args...),
 	}
 }
 
@@ -140,11 +150,11 @@ func NewValidationError(field string, err error, message string) *ValidationErro
 }
 
 // NewValidationErrorf creates a new ValidationError with formatted message.
+// The message goes into Err, so the format string may use %w to wrap a cause.
 func NewValidationErrorf(field, format string, args ...any) *ValidationError {
 	return &ValidationError{
-		Err:     fmt.Errorf(format, args...),
-		Field:   field,
-		Message: fmt.Sprintf(format, args...),
+		Err:   fmt.Errorf(format, args...),
+		Field: field,
 	}
 }
 
@@ -157,10 +167,10 @@ func NewProcessingError(err error, message string) *ProcessingError {
 }
 
 // NewProcessingErrorf creates a new ProcessingError with formatted message.
+// The message goes into Err, so the format string may use %w to wrap a cause.
 func NewProcessingErrorf(format string, args ...any) *ProcessingError {
 	return &ProcessingError{
-		Err:     fmt.Errorf(format, args...),
-		Message: fmt.Sprintf(format, args...),
+		Err: fmt.Errorf(format, args...),
 	}
 }
 
@@ -174,10 +184,10 @@ func NewTimeoutError(timeout string, err error, message string) *TimeoutError {
 }
 
 // NewTimeoutErrorf creates a new TimeoutError with formatted message.
+// The message goes into Err, so the format string may use %w to wrap a cause.
 func NewTimeoutErrorf(timeout, format string, args ...any) *TimeoutError {
 	return &TimeoutError{
 		Err:     fmt.Errorf(format, args...),
-		Message: fmt.Sprintf(format, args...),
 		Timeout: timeout,
 	}
 }
@@ -191,10 +201,10 @@ func NewFatalError(err error, message string) *FatalError {
 }
 
 // NewFatalErrorf creates a new FatalError with formatted message.
+// The message goes into Err, so the format string may use %w to wrap a cause.
 func NewFatalErrorf(format string, args ...any) *FatalError {
 	return &FatalError{
-		Err:     fmt.Errorf(format, args...),
-		Message: fmt.Sprintf(format, args...),
+		Err: fmt.Errorf(format, args...),
 	}
 }
 

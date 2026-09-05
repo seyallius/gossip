@@ -495,3 +495,61 @@ func TestErrorConstantsUsage(t *testing.T) {
 	assert.True(t, IsTimeout(ErrTimeout))
 	assert.True(t, IsFatal(ErrFatal))
 }
+
+// -------------------------------------------- Message Formatting Regressions --------------------------------------------
+
+// TestErrorf_DoesNotRepeatTheMessage covers the formatted constructors, which wrote the same
+// rendered text into both Err and Message. Error() then printed it twice, once as the message and
+// once as the cause.
+func TestErrorf_DoesNotRepeatTheMessage(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{name: "retryable", err: NewRetryableErrorf("connect to %s failed", "db"), want: "retryable error: connect to db failed"},
+		{name: "validation", err: NewValidationErrorf("email", "%q is malformed", "a@"), want: `validation error on field 'email': "a@" is malformed`},
+		{name: "processing", err: NewProcessingErrorf("bulk insert of %d rows failed", 12), want: "processing error: bulk insert of 12 rows failed"},
+		{name: "timeout", err: NewTimeoutErrorf("5s", "call to %s stalled", "esb"), want: "timeout error after 5s: call to esb stalled"},
+		{name: "fatal", err: NewFatalErrorf("config for %s is unusable", "auth"), want: "fatal error: config for auth is unusable"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, tt.err.Error())
+		})
+	}
+}
+
+// TestErrorf_WrapsACause covers the reason the duplication mattered beyond the message: passing the
+// format string to fmt.Sprintf as well as fmt.Errorf made %w unusable, and go vet rejected it.
+func TestErrorf_WrapsACause(t *testing.T) {
+	cause := errors.New("dial tcp: connection refused")
+
+	err := NewRetryableErrorf("connect to db: %w", cause)
+
+	assert.ErrorIs(t, err, cause)
+	assert.Equal(t, "retryable error: connect to db: dial tcp: connection refused", err.Error())
+}
+
+// TestError_NilCauseIsNotRendered covers an error built with no wrapped cause, which used to end in
+// a literal "<nil>" from the %v verb.
+func TestError_NilCauseIsNotRendered(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{name: "message only", err: NewProcessingError(nil, "queue is full"), want: "processing error: queue is full"},
+		{name: "nothing at all", err: NewFatalError(nil, ""), want: "fatal error"},
+		{name: "field only", err: NewValidationError("email", nil, ""), want: "validation error on field 'email'"},
+		{name: "timeout only", err: NewTimeoutError("5s", nil, ""), want: "timeout error after 5s"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, tt.err.Error())
+			assert.NotContains(t, tt.err.Error(), "<nil>")
+		})
+	}
+}
