@@ -26,10 +26,15 @@ func TestGlobalBus(t *testing.T) {
 		t.Error("Expected same global bus instance")
 	}
 
-	// Test that we can use the global bus
+	// Test that we can use the global bus. The processor signals without blocking and the
+	// subscription is removed again, because the global bus outlives this test: a leftover processor
+	// parked on a full channel would wedge a worker for every later run.
 	executed := make(chan bool, 1)
 	eventProcessor := func(ctx context.Context, event *event.Event) error {
-		executed <- true
+		select {
+		case executed <- true:
+		default:
+		}
 		return nil
 	}
 
@@ -37,6 +42,7 @@ func TestGlobalBus(t *testing.T) {
 	if subscriptionID == "" {
 		t.Fatal("Expected non-empty subscription ID")
 	}
+	defer bus1.Unsubscribe(subscriptionID)
 
 	bus1.Publish(event.NewEvent(testdata.AuthEventLoginSuccess, &testdata.LoginSuccessData{
 		UserID:   "test-user",

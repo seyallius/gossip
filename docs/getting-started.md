@@ -182,9 +182,10 @@ func main() {
 }
 ```
 
-### Using Redis Provider
+### Subscribing to Multiple Event Types
 
-For distributed systems, you can use the Redis provider:
+One processor can serve several event types, which is what you want for audit logging, metrics, or
+any other cross-cutting concern:
 
 ```go
 package main
@@ -197,14 +198,7 @@ import (
 )
 
 func main() {
-	// Initialize event bus with Redis provider
 	config := &bus.Config{
-		Driver: bus.DriverRedis,
-		RedisConfig: &RedisConfig{
-			RedisAddr: "localhost:6379",
-			RedisPwd:  "", // Set your Redis password
-			RedisDB:   0,
-		},
 		Workers:    10,
 		BufferSize: 1000,
 	}
